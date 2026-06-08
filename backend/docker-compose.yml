@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=ampopo_gogo
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  cache:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+
+  redis-insight:
+    image: redis/redisinsight:latest
+    restart: unless-stopped
+    environment:
+      - RI_ACCEPT_TERMS_AND_CONDITIONS=true
+    ports:
+      - "5540:5540"
+    volumes:
+      - redisinsight_data:/db
+
+volumes:
+  postgres_data:
+  redis_data:
+  redisinsight_data:
