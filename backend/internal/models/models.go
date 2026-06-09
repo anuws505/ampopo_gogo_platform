@@ -81,17 +81,17 @@ type Ride struct {
 
 // 5. FinancialTransaction Model (ตารางบัญชีแยกประเภทควบคุมเงิน)
 type FinancialTransaction struct {
-  ID          uuid.UUID       `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+  ID          uuid.UUID       `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 
   // ส่วนเชื่อมโยงความสัมพันธ์ (Foreign Keys & Relationships)
-  RideID      *uuid.UUID      `gorm:"type:uuid;index"` // ผูกกับทริป (เป็น NULL ได้ถ้าเป็นการถอนเงิน/เติมเงิน)
-  DriverID    *uuid.UUID      `gorm:"type:uuid;index"` // ผูกกับคนขับโดยตรง เพื่อคิวรี่ประวัติรายได้ฝั่งคนขับได้รวดเร็ว
+  RideID      *uuid.UUID      `gorm:"type:uuid;index" json:"ride_id"` // ผูกกับทริป (เป็น NULL ได้ถ้าเป็นการถอนเงิน/เติมเงิน)
+  DriverID    *uuid.UUID      `gorm:"type:uuid;index" json:"driver_id"` // ผูกกับคนขับโดยตรง เพื่อคิวรี่ประวัติรายได้ฝั่งคนขับได้รวดเร็ว
 
   // ประเภทธุรกรรมและทิศทางเงิน
-  TxType      string          `gorm:"type:varchar(20);not null"` // 'earning' (รายได้ทริป), 'withdrawal' (ถอนเงิน), 'topup' (เติมเงิน), 'fee' (ค่าธรรมเนียมแอป)
-  Amount      decimal.Decimal `gorm:"type:numeric(10,2);not null"` // ยอดเงินขยับ (ใช้เลขบวกเสมอ แล้วดูทิศทางจาก TxType หรือจะใช้ +/- ก็ได้ครับ)
+  TxType      string          `gorm:"type:varchar(20);not null" json:"tx_type"` // 'earning' (รายได้ทริป), 'withdrawal' (ถอนเงิน), 'topup' (เติมเงิน), 'fee' (ค่าธรรมเนียมแอป)
+  Amount      decimal.Decimal `gorm:"type:numeric(10,2);not null" json:"amount"` // ยอดเงินขยับ (ใช้เลขบวกเสมอ แล้วดูทิศทางจาก TxType หรือจะใช้ +/- ก็ได้ครับ)
 
   // ข้อมูลบันทึกเพิ่มเติม
-  Description string          `gorm:"type:varchar(255);not null"` // รายละเอียด เช่น "รายได้จากทริป"
-  CreatedAt   time.Time       `gorm:"autoCreateTime"`
+  Description string          `gorm:"type:varchar(255);not null" json:"description"` // รายละเอียด เช่น "รายได้จากทริป"
+  CreatedAt   time.Time       `gorm:"autoCreateTime" json:"created_at"`
 }

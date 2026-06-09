@@ -110,3 +110,5 @@ curl -X POST http://localhost:8080/api/v1/rides/complete \
 -d '{
   "ride_id": "847396eb-d67c-4336-9004-55ad6cb8a64e"
 }'
+
+curl -X GET http://localhost:8080/api/v1/wallets/driver/00000000-0000-0000-0000-000000000002/summary
