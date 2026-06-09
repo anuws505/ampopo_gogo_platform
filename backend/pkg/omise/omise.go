@@ -15,12 +15,17 @@ type OmiseClient struct {
 }
 
 func NewOmiseClient() (*OmiseClient, error) {
+  publicKey := os.Getenv("OMISE_PUBLIC_KEY")
+  if publicKey == "" {
+    return nil, fmt.Errorf("Not found OMISE_PUBLIC_KEY in Environment Variable")
+  }
+
   secretKey := os.Getenv("OMISE_SECRET_KEY")
   if secretKey == "" {
     return nil, fmt.Errorf("Not found OMISE_SECRET_KEY in Environment Variable")
   }
 
-  client, err := omise.NewClient("", secretKey)
+  client, err := omise.NewClient(publicKey, secretKey)
   if err != nil {
     return nil, err
   }
@@ -69,6 +74,50 @@ func (o *OmiseClient) ReverseCharge(chargeID string) (*omise.Charge, error) {
   result := &omise.Charge{}
   if err := o.client.Do(result, reverseOp); err != nil {
     return nil, fmt.Errorf("omise reverse error: %w", err)
+  }
+
+  return result, nil
+}
+
+func (o *OmiseClient) CreatePromptPayCharge(amountTHB decimal.Decimal) (*omise.Charge, error) {
+  amountSatang := amountTHB.Mul(decimal.NewFromInt(100)).IntPart()
+
+  // 1. ระบุประเภท Payment Source ก่อน
+  sourceOp := &operations.CreateSource{
+    Amount:   amountSatang,
+    Currency: "thb",
+    Type:     "promptpay",
+  }
+  sourceResult := &omise.Source{}
+  if err := o.client.Do(sourceResult, sourceOp); err != nil {
+    return nil, fmt.Errorf("omise promptpay source creation error: %w", err)
+  }
+
+  // 2. นำ Source ID ที่ได้ ไปเปิดบิลสร้าง Charge ทันที
+  chargeOp := &operations.CreateCharge{
+    Amount:   amountSatang,
+    Currency: "thb",
+    Source:   sourceResult.ID,
+  }
+  chargeResult := &omise.Charge{}
+  if err := o.client.Do(chargeResult, chargeOp); err != nil {
+    return nil, fmt.Errorf("omise promptpay charge creation error: %w", err)
+  }
+
+  return chargeResult, nil
+}
+
+func (o *OmiseClient) RefundCharge(chargeID string, amountTHB decimal.Decimal) (*omise.Refund, error) {
+  amountSatang := amountTHB.Mul(decimal.NewFromInt(100)).IntPart()
+
+  refundOp := &operations.CreateRefund{
+    ChargeID: chargeID,
+    Amount:   amountSatang, // คืนเงินเต็มจำนวนตามราคาทริป
+  }
+
+  result := &omise.Refund{}
+  if err := o.client.Do(result, refundOp); err != nil {
+    return nil, fmt.Errorf("omise refund error: %w", err)
   }
 
   return result, nil

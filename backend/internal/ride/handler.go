@@ -99,6 +99,7 @@ type CreateRideRequest struct {
   DurationMinutes string `json:"duration_minutes"`
   SurgeMultiplier string `json:"surge_multiplier"`
   CardToken       string `json:"card_token"`
+  PaymentMethod   string `json:"payment_method"`
   OriginName      string `json:"origin_name"`
   DestinationName string `json:"destination_name"`
 }
@@ -110,9 +111,11 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
     return
   }
 
-  if req.CardToken == "" || req.CustomerID == "" || req.VehicleType == "" {
+  if req.CardToken == "" || req.CustomerID == "" || req.VehicleType == "" ||
+    req.PaymentMethod == "" {
     core.WriteError(w, http.StatusBadRequest,
-      "customer_id and card_token and vehicle_type are required", "40002")
+      "customer_id and card_token and vehicle_type and payment_method are required",
+      "40002")
     return
   }
 
@@ -135,21 +138,44 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
   // คำนวณราคาจริงหลังบ้านอีกครั้ง (ป้องกันหน้าบ้านแก้ไขตัวเลขราคาส่งมาแอบเนียน)
   pricingResult := h.pricingService.CalculateFare(req.VehicleType, distance, duration, surge)
 
-  // ยิงไป Hold เงินลูกค้าไว้ก่อนเดินทาง
-  charge, err := h.omiseClient.CreateHoldCharge(req.CardToken, pricingResult.TotalFare)
-  if err != nil {
-    core.WriteError(w, http.StatusInternalServerError,
-      "ล็อกวงเงินบัตรเครดิตไม่สำเร็จ: "+err.Error(), "50001")
-    return
+  var omiseChargeIDPtr *string
+  var qrCodeURL string
+
+  switch req.PaymentMethod {
+    case "credit_card":
+      charge, err := h.omiseClient.CreateHoldCharge(req.CardToken, pricingResult.TotalFare)
+      if err != nil {
+        core.WriteError(w, http.StatusPaymentRequired, "ล็อกวงเงินบัตรไม่สำเร็จ: "+err.Error(), "50001")
+        return
+      }
+      omiseChargeIDPtr = &charge.ID
+      fmt.Printf("[Omise Hold Success] Charge ID: %s | Amount: %s THB\n", charge.ID, pricingResult.TotalFare)
+
+    case "promptpay":
+      charge, err := h.omiseClient.CreatePromptPayCharge(pricingResult.TotalFare)
+      if err != nil {
+        core.WriteError(w, http.StatusInternalServerError, "ไม่สามารถสร้าง QR Code ได้: "+err.Error(), "50010")
+        return
+      }
+      omiseChargeIDPtr = &charge.ID
+      
+      if charge.Source != nil && charge.Source.References != nil {
+        qrCodeURL = charge.Source.References.Barcode
+      }
+
+    default:
+      core.WriteError(w, http.StatusBadRequest, "ช่องทางการชำระเงินไม่ถูกต้อง", "40014")
+      return
   }
 
-  // พิมพ์ Log ดูผลลัพธ์ที่ Omise ตอบกลับมาทางหน้าจอคอนโซลหลังบ้าน
-  fmt.Printf("[Omise Hold Success] Charge ID: %s | Amount: %s THB\n",
-  charge.ID, pricingResult.TotalFare)
-
   // บันทึกลงฐานข้อมูล Rides เพื่อเปิดทริปจับคู่คนขับ
-  omiseChargeIDPtr := &charge.ID
   customerUUID, _ := uuid.Parse(req.CustomerID)
+  status := "searching"
+  paymentStatus := "authorized"
+  if req.PaymentMethod == "promptpay" {
+    status = "pending_payment" 
+    paymentStatus = "pending"
+  }
 
   newRide := models.Ride{
     ID:              uuid.New(),
@@ -158,7 +184,9 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
     DistanceKM:      distance,
     DurationMinutes: duration,
     SurgeMultiplier: surge,
-    Status:          "searching",
+    Status:          status,
+    PaymentMethod:   req.PaymentMethod,
+    PaymentStatus:   paymentStatus,
     TotalFare:       pricingResult.TotalFare,
     DriverShare:     pricingResult.DriverShare,
     PlatformShare:   pricingResult.PlatformShare,
@@ -178,30 +206,32 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
   fmt.Printf("[DB Saved] Ride ID: %s created with status: %s\n",
     newRide.ID, newRide.Status)
 
-  // [REAL-TIME DISPATCH] ยิงสัญญาณปลุกแอปคนขับทุกคนที่กำลัง Online ทันที!
-  // ประกอบร่างก้อนข้อมูลงาน (Job Offer) ส่งออกไปทางท่อ WebSocket
-  jobOfferMessage := map[string]interface{}{
-    "event":            "new_ride_requested",
-    "ride_id":          newRide.ID.String(),
-    "vehicle_type":     newRide.VehicleType,
-    "origin_name":      newRide.OriginName,
-    "destination_name": newRide.DestinationName,
-    "distance_km":      newRide.DistanceKM,
-    "total_fare":       newRide.TotalFare,
-  }
+  // [REAL-TIME DISPATCH] ยิงสัญญาณปลุกแอปคนขับทุกคนที่กำลัง Online!
+  if req.PaymentMethod != "promptpay" {
+    jobOfferMessage := map[string]interface{}{
+      "event":            "new_ride_requested",
+      "ride_id":          newRide.ID.String(),
+      "vehicle_type":     newRide.VehicleType,
+      "origin_name":      newRide.OriginName,
+      "destination_name": newRide.DestinationName,
+      "distance_km":      newRide.DistanceKM,
+      "total_fare":       newRide.TotalFare,
+    }
 
-  // สั่งพ่นข้อมูล JSON นี้ส่งกระจายออกไปทุกสายที่เชื่อมต่ออยู่ทันที
-  h.hub.BroadcastToDrivers(jobOfferMessage)
-  fmt.Println("[WS Broadcast] ดีดข้อมูลงานใหม่พุ่งไปหาไรเดอร์ที่ออนไลน์อยู่เรียบร้อย")
+    // สั่งพ่นข้อมูล JSON นี้ส่งกระจายออกไปทุกสายที่เชื่อมต่ออยู่ทันที
+    h.hub.BroadcastToDrivers(jobOfferMessage)
+    fmt.Println("[WS Broadcast] ดีดข้อมูลงานใหม่พุ่งไปหาไรเดอร์ที่ออนไลน์อยู่เรียบร้อย")
+  }
 
   // Return response
   core.WriteSuccess(w, http.StatusCreated,
     "สร้างทริปและล็อกวงเงินเรียบร้อย กำลังจับคู่คนขับ", "20000",
     map[string]interface{}{
-      "ride_id":    newRide.ID.String(),
-      "charge_id":  newRide.OmiseChargeID,
-      "total_fare": newRide.TotalFare,
-      "status":     newRide.Status,
+      "ride_id":     newRide.ID.String(),
+      "charge_id":   newRide.OmiseChargeID,
+      "total_fare":  newRide.TotalFare,
+      "status":      newRide.Status,
+      "qr_code_url": qrCodeURL,
     },
   )
 }
@@ -296,22 +326,31 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
     return
   }
 
-  // 2. สั่งถอนเงินจริงจาก Omise (Capture Charge) ด้วย Charge ID ที่เราบันทึกไว้ในตาราง
-  if ride.OmiseChargeID == nil || *ride.OmiseChargeID == "" {
-    core.WriteError(w, http.StatusBadRequest,
-      "ทริปนี้ไม่มีรหัสการชำระเงินผ่านบัตรเครดิต", "40003")
-    return
-  }
+  // 2. สับสวิตช์การเรียกเก็บเงินจริงตามช่องทางการชำระเงิน
+  switch ride.PaymentMethod {
+    case "credit_card":
+      if ride.OmiseChargeID == nil || *ride.OmiseChargeID == "" {
+        core.WriteError(w, http.StatusBadRequest, "ทริปนี้ไม่มีรหัสการชำระเงินผ่านบัตรเครดิต", "40003")
+        return
+      }
+      // บัตรเครดิตต้องยิง Capture Charge เก็บเงินจริง
+      _, err := h.omiseClient.CaptureCharge(*ride.OmiseChargeID)
+      if err != nil {
+        core.WriteError(w, http.StatusInternalServerError, "ไม่สามารถเรียกเก็บเงินจาก Omise ได้: "+err.Error(), "50004")
+        return
+      }
+      fmt.Printf("[Omise Capture Success] Charged %s THB from Charge ID: %s\n",
+        ride.TotalFare, *ride.OmiseChargeID)
 
-  // ยิง Capture ตัวที่เราเขียนแก้ไว้รอบก่อน
-  _, err := h.omiseClient.CaptureCharge(*ride.OmiseChargeID)
-  if err != nil {
-    core.WriteError(w, http.StatusInternalServerError,
-      "ไม่สามารถเรียกเก็บเงินจาก Omise ได้: "+err.Error(), "50004")
-    return
+    case "promptpay":
+      // หลังบ้านปล่อยไหลไปทำสเต็ปแจกเงินให้ไรเดอร์ใน DB ได้เลย
+      fmt.Printf("[PromptPay Complete] ไม่ต้องยิง Capture เพราะเงินสดอยู่ในคลัง Omise เรียบร้อยแล้ว ยอด: %s THB\n",
+        ride.TotalFare)
+
+    default:
+      core.WriteError(w, http.StatusBadRequest, "ช่องทางการชำระเงินไม่ถูกต้อง", "40014")
+      return
   }
-  fmt.Printf("[Omise Capture Success] Charged %s THB from Charge ID: %s\n",
-    ride.TotalFare, *ride.OmiseChargeID)
 
   // 3. ใช้ GORM Transaction เพื่ออัปเดตสถานะทริป และบวกเงินเข้า Wallet ไรเดอร์พร้อมๆ กัน (ป้องกันระบบเอ๋อเงินไม่เข้า)
   tx := core.DB.Begin()
@@ -344,7 +383,7 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
     DriverID:    ride.DriverID,    // ผูกรหัสคนขับ (ได้ค่ามาจากตาราง ride ที่ accept ไว้)
     TxType:      "earning",        // ระบุประเภทชัดเจนว่าเป็นรายได้จากการวิ่งงาน
     Amount:      ride.DriverShare, // ยอดเงิน 81.70 บาท
-    Description: fmt.Sprintf("รายได้จากทริปสั้น %s -> %s", ride.OriginName, ride.DestinationName),
+    Description: fmt.Sprintf("รายได้จากทริป %s -> %s", ride.OriginName, ride.DestinationName),
     CreatedAt:   time.Now(),
   }
   if err := tx.Create(&txLog).Error; err != nil {
@@ -406,22 +445,53 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
     return
   }
 
-  // 2. สั่งลุยเลเยอร์การเงิน: ยิงปลดล็อกเงินในบัตรลูกค้าผ่าน Omise
-  if ride.OmiseChargeID != nil && *ride.OmiseChargeID != "" {
-    _, err := h.omiseClient.ReverseCharge(*ride.OmiseChargeID)
-    if err != nil {
-      core.WriteError(w, http.StatusInternalServerError,
-        "ไม่สามารถปลดล็อกวงเงินบัตรเครดิตได้: "+err.Error(), "50008")
-      return
-    }
-    fmt.Printf("[Omise Reverse Success] Voided Charge ID: %s เรียบร้อย บัตรเครดิตลูกค้าได้วงเงินคืนทันที\n",
-      *ride.OmiseChargeID)
+  var targetPaymentStatus = "voided"
+
+  // 2. แตกแขนงการคืนเงินตามเงื่อนไขช่องทางชำระเงิน
+  switch ride.PaymentMethod {
+    case "credit_card":
+      // เคสบัตรเครดิต: ยิง Reverse ปลดล็อกวงเงินเดิมของคุณ
+      if ride.OmiseChargeID != nil && *ride.OmiseChargeID != "" {
+        _, err := h.omiseClient.ReverseCharge(*ride.OmiseChargeID)
+        if err != nil {
+          core.WriteError(w, http.StatusInternalServerError,
+            "ไม่สามารถปลดล็อกวงเงินบัตรเครดิตได้: "+err.Error(), "50008")
+          return
+        }
+        fmt.Printf("[Omise Reverse Success] Voided Charge ID: %s เรียบร้อย บัตรเครดิตลูกค้าได้วงเงินคืนทันที\n",
+          *ride.OmiseChargeID)
+      }
+
+    case "promptpay":
+      // เคส PromptPay: ต้องตรวจสอบก่อนว่าลูกค้าควักเงินจ่ายเข้ามาหรือยัง
+      if ride.Status == "pending_payment" {
+        // ลูกค้ายังไม่ได้โอนเงินสแกนคิวอาร์ แล้วกดยกเลิกทริปไปก่อน ไม่ต้องคืนเงินใคร เปลี่ยนสเตตัสใน DB จบงานได้เลย
+        targetPaymentStatus = "expired"
+        fmt.Println("[PromptPay Cancel] ยกเลิกงานก่อนสแกนจ่าย")
+
+      } else {
+        // ลูกค้าโอนเงินสำเร็จแล้ว (สถานะกลายเป็น searching/accepted) แล้วโดนยกเลิกทริป ต้องทำการโอนเงินสดคืน (Refund)
+        if ride.OmiseChargeID != nil && *ride.OmiseChargeID != "" {
+          _, err := h.omiseClient.RefundCharge(*ride.OmiseChargeID, ride.TotalFare)
+
+          if err != nil {
+            // core.WriteError(w, http.StatusInternalServerError, "ไม่สามารถโอนเงินคืนลูกค้าผ่านระบบ PromptPay ได้: "+err.Error(), "50011")
+            // return
+            fmt.Printf("[Omise Refund Bypass] คืนเงินออโต้ไม่สำเร็จเนื่องจาก: %v แต่ระบบจะปรับเป็นสถานะ รอแอดมินคืนเงิน เพื่อให้ทริปยกเลิกได้ปกติ\n", err)
+            targetPaymentStatus = "refund_pending"
+          } else {
+            targetPaymentStatus = "refunded"
+            fmt.Printf("[Omise Refund Success] โอนเงินคืนเข้าบัญชีลูกค้าสำเร็จยอด %s THB จาก Charge: %s\n",
+              ride.TotalFare, *ride.OmiseChargeID)
+          }
+        }
+      }
   }
 
   // 3. อัปเดตสถานะทริปใน Postgres DB ให้กลายเป็น "cancelled"
   updates := map[string]interface{}{
     "status":         "cancelled",
-    "payment_status": "voided", // อัปเดตสเตตัสจ่ายเงินเป็น โมฆะ
+    "payment_status": targetPaymentStatus, // จะเปลี่ยนเป็น voided, expired, หรือ refunded
     "updated_at":     time.Now(),
   }
 
@@ -433,13 +503,92 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
 
   fmt.Printf("[Ride Cancelled] Ride ID: %s สถานะเปลี่ยนเป็น cancelled\n", ride.ID)
 
-  // 4. ส่ง Response กลับไปบอกหน้าบ้าน
+  // 4. ส่ง Response ตอบกลับ
   core.WriteSuccess(w, http.StatusOK,
-    "ยกเลิกทริปและคืนวงเงินในบัตรเครดิตสำเร็จ", "20000",
+    "ยกเลิกทริปและจัดการระบบการเงินเรียบร้อย", "20000",
     map[string]interface{}{
       "ride_id":        ride.ID.String(),
       "status":         "cancelled",
-      "payment_status": "voided",
+      "payment_status": targetPaymentStatus,
     },
   )
+}
+
+type OmiseWebhookRequest struct {
+  Object string `json:"object"`
+  Type   string `json:"type"`
+  Data   *struct {
+    ID     string `json:"id"`
+    Status string `json:"status"`
+    Source *struct {
+      Type string `json:"type"`
+    } `json:"source"`
+  } `json:"data"`
+}
+
+// OmiseWebhookEndpoint รับฟังสัญญาณ HTTP POST จาก Omise เมื่อเกิดเหตุการณ์เงินเข้า
+func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
+  var event OmiseWebhookRequest
+  if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+    w.WriteHeader(http.StatusBadRequest)
+    return
+  }
+
+  // ดักจับเฉพาะเหตุการณ์ charge.complete (ลูกค้าจ่ายเงินสดสำเร็จแล้ว)
+  if event.Type == "charge.complete" && event.Data != nil {
+    chargeID := event.Data.ID
+
+    // ค้นหาทริปใน Postgres DB ที่ผูกกับ Charge ID ตัวนี้อยู่
+    var ride models.Ride
+    if err := core.DB.First(&ride, "omise_charge_id = ?", chargeID).Error; err != nil {
+      fmt.Printf("[Webhook Error] ไม่พบข้อมูลทริปสำหรับ Charge ID: %s\n", chargeID)
+      w.WriteHeader(http.StatusOK) // ตอบ 200 กลับไปก่อนเพื่อไม่ให้ Omise พยายามยิงซ้ำ
+      return
+    }
+
+    // แตกแขนงลอจิกตามความจริงที่เกิดขึ้นบนหน้า Dashboard
+    switch event.Data.Status {
+      case "successful":
+        // เคสที่ 1: จ่ายสำเร็จ update pending_payment ดีดกลายเป็น searching พร้อมหาไรเดอร์
+        if ride.Status == "pending_payment" {
+          updates := map[string]interface{}{
+            "status":         "searching",
+            "payment_status": "paid",
+            "updated_at":     time.Now(),
+          }
+          core.DB.Model(&ride).Updates(updates)
+          fmt.Printf("[Webhook Success] เงินเข้าจับคู่ทริปสำเร็จ! Ride ID: %s เปลี่ยนสถานะเป็น searching\n", ride.ID)
+
+          // ดีดสัญญาณหาไรเดอร์ตามปกติ
+          jobOfferMessage := map[string]interface{}{
+            "event":            "new_ride_requested",
+            "ride_id":          ride.ID.String(),
+            "vehicle_type":     ride.VehicleType,
+            "origin_name":      ride.OriginName,
+            "destination_name": ride.DestinationName,
+            "distance_km":      ride.DistanceKM,
+            "total_fare":       ride.TotalFare,
+          }
+          h.hub.BroadcastToDrivers(jobOfferMessage)
+        }
+
+      case "failed":
+        // เคสที่ 2: จ่ายล้มเหลว / ปล่อยคิวอาร์โค้ดหมดอายุ (เพิ่มเข้าไปใหม่)
+        if ride.Status == "pending_payment" {
+          updates := map[string]interface{}{
+            "status":         "cancelled",
+            "payment_status": "failed",
+            "updated_at":     time.Now(),
+          }
+          core.DB.Model(&ride).Updates(updates)
+          fmt.Printf("[Webhook Failed Log] ทริป Ride ID: %s ถูกปรับเป็น cancelled อัตโนมัติ เนื่องจากสแกนเงินล้มเหลว\n", ride.ID)
+          
+          // แถมเทคนิค: ตรงนี้สามารถส่ง WebSocket ไปบอกแอปฝั่งลูกค้า (Customer) ได้ด้วยนะ
+          // ว่า "การชำระเงินไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" หน้าแอปจะได้เด้งเตือน
+        }
+    }
+  }
+
+  // ตอบกลับสถานะ 200 OK เพื่อบอก Omise ว่าหลังบ้านได้รับสัญญาณเรียบร้อยแล้ว
+  w.WriteHeader(http.StatusOK)
 }
