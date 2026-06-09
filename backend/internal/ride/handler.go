@@ -4,6 +4,7 @@ package ride
 import (
 	"ampopo_gogo_platform/internal/core"
 	"ampopo_gogo_platform/internal/models"
+	"ampopo_gogo_platform/internal/realtime"
 	"ampopo_gogo_platform/pkg/omise"
 	"encoding/json"
 	"fmt"
@@ -17,12 +18,15 @@ import (
 type RideHandler struct {
   pricingService *PricingService
   omiseClient    *omise.OmiseClient
+  hub            *realtime.Hub
 }
 
-func NewRideHandler(ps *PricingService, oc *omise.OmiseClient) *RideHandler {
+func NewRideHandler(ps *PricingService, oc *omise.OmiseClient,
+  h *realtime.Hub) *RideHandler {
   return &RideHandler{
     pricingService: ps,
     omiseClient:    oc,
+    hub:            h,
   }
 }
 
@@ -167,10 +171,28 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
 
   if err := core.DB.Create(&newRide).Error; err != nil {
     fmt.Printf("Database Insert Error: %v\n", err)
-    core.WriteError(w, http.StatusInternalServerError, "ไม่สามารถบันทึกข้อมูลทริปลงฐานข้อมูลได้", "50002")
+    core.WriteError(w, http.StatusInternalServerError,
+      "ไม่สามารถบันทึกข้อมูลทริปลงฐานข้อมูลได้", "50002")
     return
   }
-  fmt.Printf("[DB Saved] Ride ID: %s created with status: %s\n", newRide.ID, newRide.Status)
+  fmt.Printf("[DB Saved] Ride ID: %s created with status: %s\n",
+    newRide.ID, newRide.Status)
+
+  // [REAL-TIME DISPATCH] ยิงสัญญาณปลุกแอปคนขับทุกคนที่กำลัง Online ทันที!
+  // ประกอบร่างก้อนข้อมูลงาน (Job Offer) ส่งออกไปทางท่อ WebSocket
+  jobOfferMessage := map[string]interface{}{
+    "event":            "new_ride_requested",
+    "ride_id":          newRide.ID.String(),
+    "vehicle_type":     newRide.VehicleType,
+    "origin_name":      newRide.OriginName,
+    "destination_name": newRide.DestinationName,
+    "distance_km":      newRide.DistanceKM,
+    "total_fare":       newRide.TotalFare,
+  }
+
+  // สั่งพ่นข้อมูล JSON นี้ส่งกระจายออกไปทุกสายที่เชื่อมต่ออยู่ทันที
+  h.hub.BroadcastToDrivers(jobOfferMessage)
+  fmt.Println("[WS Broadcast] ดีดข้อมูลงานใหม่พุ่งไปหาไรเดอร์ที่ออนไลน์อยู่เรียบร้อย")
 
   // Return response
   core.WriteSuccess(w, http.StatusCreated,
