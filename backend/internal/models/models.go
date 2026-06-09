@@ -34,6 +34,7 @@ type Driver struct {
 type DriverWallet struct {
   DriverID  uuid.UUID       `gorm:"type:uuid;primaryKey"`
   Balance   decimal.Decimal `gorm:"type:numeric(10,2);not null;default:0.00"` // ทศนิยม 2 ตำแหน่ง
+  CreatedAt time.Time       `gorm:"autoCreateTime"`
   UpdatedAt time.Time       `gorm:"autoUpdateTime"`
 }
 
@@ -43,36 +44,36 @@ type Ride struct {
   CustomerID       uuid.UUID       `gorm:"type:uuid;not null"`
   DriverID         *uuid.UUID      `gorm:"type:uuid"` // ใช้ Pointer เผื่อกรณีเริ่มแรกยังไม่มีคนขับรับงาน (Null)
   VehicleType      string          `gorm:"type:varchar(20);not null"`
-  
+
   // พิกัดปักหมุดแผนที่
   PickupLatitude   decimal.Decimal `gorm:"type:numeric(9,6);not null"`
   PickupLongitude  decimal.Decimal `gorm:"type:numeric(9,6);not null"`
   DropoffLatitude  decimal.Decimal `gorm:"type:numeric(9,6);not null"`
   DropoffLongitude decimal.Decimal `gorm:"type:numeric(9,6);not null"`
-  
+
   // รายละเอียดระยะทางและราคา
   DistanceKM       decimal.Decimal `gorm:"type:numeric(5,2);not null"` // เช่น 2.00 กม.
   DurationMinutes  decimal.Decimal `gorm:"type:numeric(5,2);not null"` // สำหรับรถยนต์
   SurgeMultiplier  decimal.Decimal `gorm:"type:numeric(3,2);default:1.00"` // เช่น 1.30
-  
-  // ข้อมูลการเงินสุทธิของทริป (จากสูตร 35 บาท ขั้นต่ำ / คอม 13%)
+
+  // ข้อมูลการเงินสุทธิของทริป (จากสูตร 35 บาท ขั้นต่ำ / คอม 14%)
   TotalFare        decimal.Decimal `gorm:"type:numeric(10,2);not null"` // ยอดเต็มจากลูกค้า (เช่น 35.00)
-  DriverShare      decimal.Decimal `gorm:"type:numeric(10,2);not null"` // โอนให้คนขับ 87% (เช่น 30.45)
-  PlatformShare    decimal.Decimal `gorm:"type:numeric(10,2);not null"` // เข้าแอป 13% (เช่น 4.55)
-  
+  DriverShare      decimal.Decimal `gorm:"type:numeric(10,2);not null"` // โอนให้คนขับ 86% (เช่น 30.10)
+  PlatformShare    decimal.Decimal `gorm:"type:numeric(10,2);not null"` // เข้าแอป 14% (เช่น 4.90)
+
   // สเตตัสและข้อมูล Gateway
   PaymentMethod    string          `gorm:"type:varchar(20);not null"` // 'promptpay', 'credit_card', 'cash'
   PaymentStatus    string          `gorm:"type:varchar(20);default:'pending'"` // 'pending', 'authorized', 'captured', 'voided'
   OmiseChargeID    *string         `gorm:"type:varchar(100)"` // ใช้คุยกับ Omise API (Hold/Capture)
-  
+
   // 'requested', 'searching' 'accepted', 'in_progress', 'completed', 'cancelled'
   Status           string          `gorm:"type:varchar(30);default:'requested'"`
   OriginName       string          `gorm:"type:varchar(100)"`
   DestinationName  string          `gorm:"type:varchar(100)"`
-  
+
   CreatedAt        time.Time       `gorm:"autoCreateTime"`
   UpdatedAt        time.Time       `gorm:"autoUpdateTime"`
-  
+
   // Relationships สำหรับให้ GORM ดึงข้อมูลเชื่อมโยงง่ายๆ
   Customer         Customer        `gorm:"foreignKey:CustomerID"`
   Driver           *Driver         `gorm:"foreignKey:DriverID"`
@@ -81,10 +82,16 @@ type Ride struct {
 // 5. FinancialTransaction Model (ตารางบัญชีแยกประเภทควบคุมเงิน)
 type FinancialTransaction struct {
   ID          uuid.UUID       `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-  RideID      *uuid.UUID      `gorm:"type:uuid"` // ใช้ Pointer เผื่อเป็นธุรกรรมที่ไม่เกี่ยวกับทริป เช่น คนขับถอนเงินออก
-  WalletID    *uuid.UUID      `gorm:"type:uuid"` // ถ้าเป็นธุรกรรมฝั่งแอปเพียวๆ ส่วนนี้จะเป็น Null
-  PartyType   string          `gorm:"type:varchar(20);not null"` // 'platform', 'driver', 'payment_gateway'
-  Amount      decimal.Decimal `gorm:"type:numeric(10,2);not null"` // ยอดเงินขยับ (+/-)
-  Description string          `gorm:"type:text;not null"`
+
+  // ส่วนเชื่อมโยงความสัมพันธ์ (Foreign Keys & Relationships)
+  RideID      *uuid.UUID      `gorm:"type:uuid;index"` // ผูกกับทริป (เป็น NULL ได้ถ้าเป็นการถอนเงิน/เติมเงิน)
+  DriverID    *uuid.UUID      `gorm:"type:uuid;index"` // ผูกกับคนขับโดยตรง เพื่อคิวรี่ประวัติรายได้ฝั่งคนขับได้รวดเร็ว
+
+  // ประเภทธุรกรรมและทิศทางเงิน
+  TxType      string          `gorm:"type:varchar(20);not null"` // 'earning' (รายได้ทริป), 'withdrawal' (ถอนเงิน), 'topup' (เติมเงิน), 'fee' (ค่าธรรมเนียมแอป)
+  Amount      decimal.Decimal `gorm:"type:numeric(10,2);not null"` // ยอดเงินขยับ (ใช้เลขบวกเสมอ แล้วดูทิศทางจาก TxType หรือจะใช้ +/- ก็ได้ครับ)
+
+  // ข้อมูลบันทึกเพิ่มเติม
+  Description string          `gorm:"type:varchar(255);not null"` // รายละเอียด เช่น "รายได้จากทริป"
   CreatedAt   time.Time       `gorm:"autoCreateTime"`
 }

@@ -172,7 +172,7 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
   }
   fmt.Printf("[DB Saved] Ride ID: %s created with status: %s\n", newRide.ID, newRide.Status)
 
-  // Return response to frontend
+  // Return response
   core.WriteSuccess(w, http.StatusCreated,
     "สร้างทริปและล็อกวงเงินเรียบร้อย กำลังจับคู่คนขับ", "20000",
     map[string]interface{}{
@@ -239,6 +239,111 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
       "ride_id":   ride.ID.String(),
       "status":    "accepted",
       "driver_id": req.DriverID,
+    },
+  )
+}
+
+type CompleteRideRequest struct {
+  RideID string `json:"ride_id"`
+}
+
+func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Request) {
+  var req CompleteRideRequest
+  if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
+    return
+  }
+
+  if req.RideID == "" {
+    core.WriteError(w, http.StatusBadRequest, "ride_id is required", "40002")
+    return
+  }
+
+  rideUUID, _ := uuid.Parse(req.RideID)
+
+  // 1. ดึงข้อมูลทริปจาก DB มาเช็กว่าทริปนี้อยู่ในสถานะที่ควรจะปิดงานได้ไหม (เช่น ต้องเป็น accepted หรือ driving)
+  var ride models.Ride
+  if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
+    core.WriteError(w, http.StatusNotFound, "ไม่พบข้อมูลทริปดังกล่าว", "40401")
+    return
+  }
+
+  if ride.Status == "completed" {
+    core.WriteError(w, http.StatusConflict,
+      "ทริปนี้ถูกปิดงานและเก็บเงินไปเรียบร้อยแล้ว", "40902")
+    return
+  }
+
+  // 2. สั่งถอนเงินจริงจาก Omise (Capture Charge) ด้วย Charge ID ที่เราบันทึกไว้ในตาราง
+  if ride.OmiseChargeID == nil || *ride.OmiseChargeID == "" {
+    core.WriteError(w, http.StatusBadRequest,
+      "ทริปนี้ไม่มีรหัสการชำระเงินผ่านบัตรเครดิต", "40003")
+    return
+  }
+
+  // ยิง Capture ตัวที่เราเขียนแก้ไว้รอบก่อน
+  _, err := h.omiseClient.CaptureCharge(*ride.OmiseChargeID)
+  if err != nil {
+    core.WriteError(w, http.StatusInternalServerError,
+      "ไม่สามารถเรียกเก็บเงินจาก Omise ได้: "+err.Error(), "50004")
+    return
+  }
+  fmt.Printf("[Omise Capture Success] Charged %s THB from Charge ID: %s\n",
+    ride.TotalFare, *ride.OmiseChargeID)
+
+  // 3. ใช้ GORM Transaction เพื่ออัปเดตสถานะทริป และบวกเงินเข้า Wallet ไรเดอร์พร้อมๆ กัน (ป้องกันระบบเอ๋อเงินไม่เข้า)
+  tx := core.DB.Begin()
+
+  // 3.1 อัปเดตสถานะทริปเป็น completed
+  rideUpdates := map[string]interface{}{
+    "status":         "completed",
+    "payment_status": "paid", // เปลี่ยนจาก pending เป็น paid
+    "updated_at":     time.Now(),
+  }
+  if err := tx.Model(&ride).Updates(rideUpdates).Error; err != nil {
+    tx.Rollback()
+    core.WriteError(w, http.StatusInternalServerError, "อัปเดตสถานะทริปไม่สำเร็จ", "50005")
+    return
+  }
+
+  // 3.2 โอนเงินส่วนแบ่ง เข้า Wallet คนขับ balance = balance + driver_share
+  if err := tx.Exec("UPDATE driver_wallets SET balance = balance + ?, updated_at = ? WHERE driver_id = ?",
+    ride.DriverShare, time.Now(), ride.DriverID).Error; err != nil {
+    tx.Rollback()
+    core.WriteError(w, http.StatusInternalServerError,
+      "ไม่สามารถโอนส่วนแบ่งเข้ากระเป๋าคนขับได้", "50006")
+    return
+  }
+
+  // 3.3 บันทึกประวัติการเงินลงตารางบัญชีแยกประเภท (FinancialTransactions) หลังจบงาน
+  txLog := models.FinancialTransaction{
+    ID:          uuid.New(),
+    RideID:      &ride.ID,         // ผูกรหัสทริป
+    DriverID:    ride.DriverID,    // ผูกรหัสคนขับ (ได้ค่ามาจากตาราง ride ที่ accept ไว้)
+    TxType:      "earning",        // ระบุประเภทชัดเจนว่าเป็นรายได้จากการวิ่งงาน
+    Amount:      ride.DriverShare, // ยอดเงิน 81.70 บาท
+    Description: fmt.Sprintf("รายได้จากทริปสั้น %s -> %s", ride.OriginName, ride.DestinationName),
+    CreatedAt:   time.Now(),
+  }
+  if err := tx.Create(&txLog).Error; err != nil {
+    tx.Rollback()
+    core.WriteError(w, http.StatusInternalServerError,
+      "ไม่สามารถบันทึกประวัติธุรกรรมได้", "50007")
+    return
+  }
+
+  // มั่นใจว่าบันทึกทุกอย่างลงฐานข้อมูลพร้อมกัน
+  tx.Commit()
+  fmt.Printf("[DB Transaction Committed] Ride %s Completed. Wallet Updated for Driver: %v\n",
+    ride.ID, ride.DriverID)
+
+  // 4. ส่ง Response ตอบกลับแอปคนขับว่า ปิดงานเสร็จสิ้น เงินเข้ากระเป๋าแล้วนะ!
+  core.WriteSuccess(w, http.StatusOK,
+    "ปิดทริปและชำระเงินเสร็จสิ้น", "20000",
+    map[string]interface{}{
+      "ride_id":      ride.ID.String(),
+      "status":       "completed",
+      "driver_share": ride.DriverShare,
     },
   )
 }

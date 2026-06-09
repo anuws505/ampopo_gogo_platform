@@ -104,3 +104,9 @@ curl -X POST http://localhost:8080/api/v1/rides/accept \
   "ride_id": "847396eb-d67c-4336-9004-55ad6cb8a64e",
   "driver_id": "00000000-0000-0000-0000-000000000002"
 }'
+
+curl -X POST http://localhost:8080/api/v1/rides/complete \
+-H "Content-Type: application/json" \
+-d '{
+  "ride_id": "847396eb-d67c-4336-9004-55ad6cb8a64e"
+}'

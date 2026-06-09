@@ -42,6 +42,7 @@ func main() {
   r.HandleFunc("/api/v1/rides/estimate", rideHandler.EstimateFareEndpoint).Methods("POST")
   r.HandleFunc("/api/v1/rides/create", rideHandler.CreateRideEndpoint).Methods("POST")
   r.HandleFunc("/api/v1/rides/accept", rideHandler.AcceptRideEndpoint).Methods("POST")
+  r.HandleFunc("/api/v1/rides/complete", rideHandler.CompleteRideEndpoint).Methods("POST")
   // r.HandleFunc("/api/v1/rides/cancel", rideHandler.CancelRideEndpoint).Methods("POST")
 
   // Workers
