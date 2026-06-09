@@ -60,3 +60,16 @@ func (o *OmiseClient) CaptureCharge(chargeID string) (*omise.Charge, error) {
 
   return result, nil
 }
+
+func (o *OmiseClient) ReverseCharge(chargeID string) (*omise.Charge, error) {
+  reverseOp := &operations.ReverseCharge{
+    ChargeID: chargeID,
+  }
+
+  result := &omise.Charge{}
+  if err := o.client.Do(result, reverseOp); err != nil {
+    return nil, fmt.Errorf("omise reverse error: %w", err)
+  }
+
+  return result, nil
+}

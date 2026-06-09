@@ -81,8 +81,8 @@ curl -X POST http://localhost:8080/api/v1/rides/create \
   "vehicle_type": "car",
   "distance_km": "5",
   "duration_minutes": "10",
-  "surge_multiplier": "1",
-  "card_token": "tokn_test_67yjszxabj37kc7dtg4",
+  "surge_multiplier": "1.5",
+  "card_token": "tokn_test_67yk13yzh33c7mcu0ks",
   "origin_name": "เซ็นทรัลลาดพร้าว",
   "destination_name": "สยามพารากอน"
 }'
@@ -101,7 +101,7 @@ curl https://vault.omise.co/tokens \
 curl -X POST http://localhost:8080/api/v1/rides/accept \
 -H "Content-Type: application/json" \
 -d '{
-  "ride_id": "505197bf-81a4-487b-ac55-4086b6a7d2cd",
+  "ride_id": "cd580814-b115-48d6-a28d-eb56efc2d7dd",
   "driver_id": "00000000-0000-0000-0000-000000000002"
 }'
 
@@ -112,3 +112,9 @@ curl -X POST http://localhost:8080/api/v1/rides/complete \
 }'
 
 curl -X GET http://localhost:8080/api/v1/wallets/driver/00000000-0000-0000-0000-000000000002/summary
+
+curl -X POST http://localhost:8080/api/v1/rides/cancel \
+-H "Content-Type: application/json" \
+-d '{
+  "ride_id": "cd580814-b115-48d6-a28d-eb56efc2d7dd"
+}'

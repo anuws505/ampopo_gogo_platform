@@ -49,6 +49,7 @@ func main() {
   r.HandleFunc("/api/v1/rides/create", rideHandler.CreateRideEndpoint).Methods("POST")
   r.HandleFunc("/api/v1/rides/accept", rideHandler.AcceptRideEndpoint).Methods("POST")
   r.HandleFunc("/api/v1/rides/complete", rideHandler.CompleteRideEndpoint).Methods("POST")
+  r.HandleFunc("/api/v1/rides/cancel", rideHandler.CancelRideEndpoint).Methods("POST")
 
   // ประกาศชิ้นส่วนฝั่ง Wallet
   walletService := wallet.NewWalletService()

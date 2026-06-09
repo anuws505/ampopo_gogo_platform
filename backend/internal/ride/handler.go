@@ -369,3 +369,77 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
     },
   )
 }
+
+type CancelRideRequest struct {
+  RideID string `json:"ride_id"`
+}
+
+func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request) {
+  var req CancelRideRequest
+  if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
+    return
+  }
+
+  if req.RideID == "" {
+    core.WriteError(w, http.StatusBadRequest, "ride_id is required", "40002")
+    return
+  }
+
+  rideUUID, _ := uuid.Parse(req.RideID)
+
+  // 1. ดึงข้อมูลทริปมาตรวจสอบสถานะปัจจุบัน
+  var ride models.Ride
+  if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
+    core.WriteError(w, http.StatusNotFound, "ไม่พบข้อมูลทริปดังกล่าว", "40401")
+    return
+  }
+
+  // Safety Check: ทริปต้องไม่ถูกปิดงานไปแล้ว หรือถูกยกเลิกซ้ำซ้อน
+  if ride.Status == "completed" {
+    core.WriteError(w, http.StatusConflict,
+      "ไม่สามารถยกเลิกได้ เนื่องจากทริปนี้เดินทางสำเร็จและเก็บเงินไปแล้ว", "40903")
+    return
+  }
+  if ride.Status == "cancelled" {
+    core.WriteError(w, http.StatusConflict, "ทริปนี้ถูกยกเลิกไปก่อนหน้านี้เรียบร้อยแล้ว", "40904")
+    return
+  }
+
+  // 2. สั่งลุยเลเยอร์การเงิน: ยิงปลดล็อกเงินในบัตรลูกค้าผ่าน Omise
+  if ride.OmiseChargeID != nil && *ride.OmiseChargeID != "" {
+    _, err := h.omiseClient.ReverseCharge(*ride.OmiseChargeID)
+    if err != nil {
+      core.WriteError(w, http.StatusInternalServerError,
+        "ไม่สามารถปลดล็อกวงเงินบัตรเครดิตได้: "+err.Error(), "50008")
+      return
+    }
+    fmt.Printf("[Omise Reverse Success] Voided Charge ID: %s เรียบร้อย บัตรเครดิตลูกค้าได้วงเงินคืนทันที\n",
+      *ride.OmiseChargeID)
+  }
+
+  // 3. อัปเดตสถานะทริปใน Postgres DB ให้กลายเป็น "cancelled"
+  updates := map[string]interface{}{
+    "status":         "cancelled",
+    "payment_status": "voided", // อัปเดตสเตตัสจ่ายเงินเป็น โมฆะ
+    "updated_at":     time.Now(),
+  }
+
+  if err := core.DB.Model(&ride).Updates(updates).Error; err != nil {
+    core.WriteError(w, http.StatusInternalServerError,
+      "ไม่สามารถอัปเดตสถานะการยกเลิกทริปลงฐานข้อมูลได้", "50009")
+    return
+  }
+
+  fmt.Printf("[Ride Cancelled] Ride ID: %s สถานะเปลี่ยนเป็น cancelled\n", ride.ID)
+
+  // 4. ส่ง Response กลับไปบอกหน้าบ้าน
+  core.WriteSuccess(w, http.StatusOK,
+    "ยกเลิกทริปและคืนวงเงินในบัตรเครดิตสำเร็จ", "20000",
+    map[string]interface{}{
+      "ride_id":        ride.ID.String(),
+      "status":         "cancelled",
+      "payment_status": "voided",
+    },
+  )
+}
