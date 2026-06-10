@@ -81,14 +81,28 @@ curl -X POST http://localhost:8080/api/v1/rides/create \
 -d '{
   "customer_id": "00000000-0000-0000-0000-000000000001",
   "vehicle_type": "car",
-  "distance_km": "5",
+  "pickup_latitude": "13.816200",
+  "pickup_longitude": "100.560300",
+  "distance_km": "7",
   "duration_minutes": "10",
   "surge_multiplier": "1",
-  "card_token": "tokn_test_67yms2b1wejwm22oxan",
-  "payment_method": "credit_card",
+  "card_token": "xxx",
+  "payment_method": "promptpay",
   "origin_name": "เซ็นทรัลลาดพร้าว",
   "destination_name": "สยามพารากอน"
 }'
+// เซ็นทรัลลาดพร้าว
+{
+  "event": "update_location",
+  "latitude": 13.8162,
+  "longitude": 100.5603
+}
+// สยามพารากอน
+{
+  "event": "update_location",
+  "latitude": 13.7469,
+  "longitude": 100.5393
+}
 
 curl https://vault.omise.co/tokens \
   -X POST \
@@ -104,14 +118,14 @@ curl https://vault.omise.co/tokens \
 curl -X POST http://localhost:8080/api/v1/rides/accept \
 -H "Content-Type: application/json" \
 -d '{
-  "ride_id": "4c5daedd-dc32-4c84-a6a1-9d1cce25ecdd",
+  "ride_id": "d8445d8c-bd10-4062-ae0c-3d8be07a4ad4",
   "driver_id": "00000000-0000-0000-0000-000000000002"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/complete \
 -H "Content-Type: application/json" \
 -d '{
-  "ride_id": "4c5daedd-dc32-4c84-a6a1-9d1cce25ecdd"
+  "ride_id": "d8445d8c-bd10-4062-ae0c-3d8be07a4ad4"
 }'
 
 curl -X GET http://localhost:8080/api/v1/wallets/driver/00000000-0000-0000-0000-000000000002/summary
@@ -119,7 +133,7 @@ curl -X GET http://localhost:8080/api/v1/wallets/driver/00000000-0000-0000-0000-
 curl -X POST http://localhost:8080/api/v1/rides/cancel \
 -H "Content-Type: application/json" \
 -d '{
-  "ride_id": "4c5daedd-dc32-4c84-a6a1-9d1cce25ecdd"
+  "ride_id": "6ca2c97a-bb6f-4eb2-a0f0-d5fdb45770e8"
 }'
 
 curl -X POST http://localhost:8080/api/v1/omise/webhook \
@@ -128,21 +142,7 @@ curl -X POST http://localhost:8080/api/v1/omise/webhook \
   "object": "event",
   "type": "charge.complete",
   "data": {
-    "id": "chrg_test_67ymig9bmir5utdlas0",
+    "id": "chrg_test_67yxn7d6aq1eh15h5ya",
     "status": "successful"
   }
 }'
-
-// เซ็นทรัลลาดพร้าว
-{
-  "event": "update_location",
-  "latitude": 13.8162,
-  "longitude": 100.5603
-}
-
-// สยามพารากอน
-{
-  "event": "update_location",
-  "latitude": 13.7469,
-  "longitude": 100.5393
-}

@@ -77,7 +77,7 @@ func main() {
   }).Methods("GET") // WebSocket จะเริ่มคุยด้วย Method "GET" เสมอ
 
   // Workers
-  // go workers.DoCleanupExpiredDrafts()
+  go realtimeHub.StartDispatchWorker(core.Ctx)
 
   // เปิด Server ที่ Port 8080
   port := ":8080"

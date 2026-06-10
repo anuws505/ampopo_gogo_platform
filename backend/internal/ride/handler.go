@@ -93,15 +93,19 @@ func (h *RideHandler) EstimateFareEndpoint(w http.ResponseWriter, r *http.Reques
 }
 
 type CreateRideRequest struct {
-  CustomerID      string `json:"customer_id"`
-  VehicleType     string `json:"vehicle_type"`
-  DistanceKM      string `json:"distance_km"`
-  DurationMinutes string `json:"duration_minutes"`
-  SurgeMultiplier string `json:"surge_multiplier"`
-  CardToken       string `json:"card_token"`
-  PaymentMethod   string `json:"payment_method"`
-  OriginName      string `json:"origin_name"`
-  DestinationName string `json:"destination_name"`
+  CustomerID       string `json:"customer_id"`
+  VehicleType      string `json:"vehicle_type"`
+  PickupLatitude   string `json:"pickup_latitude"`
+  PickupLongitude  string `json:"pickup_longitude"`
+  DropoffLatitude  string `json:"dropoff_latitude"`
+  DropoffLongitude string `json:"dropoff_longitude"`
+  DistanceKM       string `json:"distance_km"`
+  DurationMinutes  string `json:"duration_minutes"`
+  SurgeMultiplier  string `json:"surge_multiplier"`
+  CardToken        string `json:"card_token"`
+  PaymentMethod    string `json:"payment_method"`
+  OriginName       string `json:"origin_name"`
+  DestinationName  string `json:"destination_name"`
 }
 
 func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +123,19 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
     return
   }
 
+  // แปลงค่าจาก string ใน request ให้เป็น decimal ใช้ใน Ride struct
+  pickupLat, err := decimal.NewFromString(req.PickupLatitude)
+  if err != nil {
+    core.WriteError(w, http.StatusBadRequest, "Invalid pickup_latitude format", "40015")
+    return
+  }
+  pickupLng, err := decimal.NewFromString(req.PickupLongitude)
+  if err != nil {
+    core.WriteError(w, http.StatusBadRequest, "Invalid pickup_longitude format", "40016")
+    return
+  }
+
+  // แปลงค่าจาก string ใน request ให้เป็น decimal เพื่อใช้คำนวณ
   distance, err := decimal.NewFromString(req.DistanceKM)
   if err != nil {
     core.WriteError(w, http.StatusBadRequest, "Invalid distance_km", "40011")
@@ -145,16 +162,19 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
     case "credit_card":
       charge, err := h.omiseClient.CreateHoldCharge(req.CardToken, pricingResult.TotalFare)
       if err != nil {
-        core.WriteError(w, http.StatusPaymentRequired, "ล็อกวงเงินบัตรไม่สำเร็จ: "+err.Error(), "50001")
+        core.WriteError(w, http.StatusPaymentRequired,
+          "ล็อกวงเงินบัตรไม่สำเร็จ: "+err.Error(), "50001")
         return
       }
       omiseChargeIDPtr = &charge.ID
-      fmt.Printf("[Omise Hold Success] Charge ID: %s | Amount: %s THB\n", charge.ID, pricingResult.TotalFare)
+      fmt.Printf("[Omise Hold Success] Charge ID: %s | Amount: %s THB\n",
+        charge.ID, pricingResult.TotalFare)
 
     case "promptpay":
       charge, err := h.omiseClient.CreatePromptPayCharge(pricingResult.TotalFare)
       if err != nil {
-        core.WriteError(w, http.StatusInternalServerError, "ไม่สามารถสร้าง QR Code ได้: "+err.Error(), "50010")
+        core.WriteError(w, http.StatusInternalServerError,
+          "ไม่สามารถสร้าง QR Code ได้: "+err.Error(), "50010")
         return
       }
       omiseChargeIDPtr = &charge.ID
@@ -181,6 +201,8 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
     ID:              uuid.New(),
     CustomerID:      customerUUID,
     VehicleType:     req.VehicleType,
+    PickupLatitude:  pickupLat,
+    PickupLongitude: pickupLng,
     DistanceKM:      distance,
     DurationMinutes: duration,
     SurgeMultiplier: surge,
@@ -206,8 +228,9 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
   fmt.Printf("[DB Saved] Ride ID: %s created with status: %s\n",
     newRide.ID, newRide.Status)
 
-  // [REAL-TIME DISPATCH] ยิงสัญญาณปลุกแอปคนขับทุกคนที่กำลัง Online!
+  // [REAL-TIME DISPATCH]
   if req.PaymentMethod != "promptpay" {
+    // จัดก้อน Message เตรียมพ่นออกท่อ
     jobOfferMessage := map[string]interface{}{
       "event":            "new_ride_requested",
       "ride_id":          newRide.ID.String(),
@@ -218,9 +241,24 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
       "total_fare":       newRide.TotalFare,
     }
 
-    // สั่งพ่นข้อมูล JSON นี้ส่งกระจายออกไปทุกสายที่เชื่อมต่ออยู่ทันที
-    h.hub.BroadcastToDrivers(jobOfferMessage)
-    fmt.Println("[WS Broadcast] ดีดข้อมูลงานใหม่พุ่งไปหาไรเดอร์ที่ออนไลน์อยู่เรียบร้อย")
+    // ส่งข้อมูล JSON นี้ส่งกระจายออกไปทุกสายที่เชื่อมต่ออยู่
+    // h.hub.BroadcastToDrivers(jobOfferMessage)
+    // fmt.Println("[WS Broadcast] ส่งข้อมูลงานใหม่พุ่งไปหาไรเดอร์ที่ออนไลน์อยู่เรียบร้อย")
+    
+    // ดึงค่าจาก decimal ที่เช็กผ่าน Error ด้านบนมาใช้เพื่อความปลอดภัย
+    lat := pickupLat.InexactFloat64()
+    lon := pickupLng.InexactFloat64()
+
+    // ยิงเรดาร์สแกนหาคนขับรอบตัวลูกค้าในรัศมี 3 กิโลเมตร 
+    nearbyDriverIDs, _ := h.hub.FindNearbyDrivers(r.Context(), lat, lon, 3.0)
+
+    // วนลูปส่งข้อความเจาะจงเฉพาะกลุ่มคนที่ Redis สแกนเจอพิกัดใกล้ตัวลูกค้า 3 กม.
+    for _, driverIDStr := range nearbyDriverIDs {
+      driverUUID, _ := uuid.Parse(driverIDStr)
+      h.hub.SendToSpecificDriver(driverUUID, jobOfferMessage) 
+    }
+    fmt.Printf("[Targeted Dispatch] ส่งสัญญาณงานส่งถึงคนขับในระยะใกล้จำนวน %d ท่านเรียบร้อย\n",
+      len(nearbyDriverIDs))
   }
 
   // Return response
@@ -549,7 +587,7 @@ func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Reques
     // แตกแขนงลอจิกตามความจริงที่เกิดขึ้นบนหน้า Dashboard
     switch event.Data.Status {
       case "successful":
-        // เคสที่ 1: จ่ายสำเร็จ update pending_payment ดีดกลายเป็น searching พร้อมหาไรเดอร์
+        // เคสที่ 1: จ่ายสำเร็จ update pending_payment เป็น searching พร้อมหาไรเดอร์
         if ride.Status == "pending_payment" {
           updates := map[string]interface{}{
             "status":         "searching",
@@ -559,7 +597,7 @@ func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Reques
           core.DB.Model(&ride).Updates(updates)
           fmt.Printf("[Webhook Success] เงินเข้าจับคู่ทริปสำเร็จ! Ride ID: %s เปลี่ยนสถานะเป็น searching\n", ride.ID)
 
-          // ดีดสัญญาณหาไรเดอร์ตามปกติ
+          // จัดก้อน Message เตรียมพ่นออกท่อ
           jobOfferMessage := map[string]interface{}{
             "event":            "new_ride_requested",
             "ride_id":          ride.ID.String(),
@@ -569,7 +607,25 @@ func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Reques
             "distance_km":      ride.DistanceKM,
             "total_fare":       ride.TotalFare,
           }
-          h.hub.BroadcastToDrivers(jobOfferMessage)
+
+          // ส่งข้อมูล JSON นี้ส่งกระจายออกไปทุกสายที่เชื่อมต่ออยู่
+          // h.hub.BroadcastToDrivers(jobOfferMessage)
+          // fmt.Println("[WS Broadcast] ส่งข้อมูลงานใหม่พุ่งไปหาไรเดอร์ที่ออนไลน์อยู่เรียบร้อย")
+
+          // ดึงค่าจาก decimal Ride struct มาใช้
+          lat := ride.PickupLatitude.InexactFloat64()
+          lon := ride.PickupLongitude.InexactFloat64()
+
+          // ยิงเรดาร์สแกนหาคนขับรอบตัวลูกค้าในรัศมี 3 กิโลเมตร 
+          nearbyDriverIDs, _ := h.hub.FindNearbyDrivers(r.Context(), lat, lon, 3.0)
+
+          // วนลูปส่งข้อความเจาะจงเฉพาะกลุ่มคนที่ Redis สแกนเจอพิกัดใกล้ตัวลูกค้า 3 กม.
+          for _, driverIDStr := range nearbyDriverIDs {
+            driverUUID, _ := uuid.Parse(driverIDStr)
+            h.hub.SendToSpecificDriver(driverUUID, jobOfferMessage) 
+          }
+          fmt.Printf("[Targeted Dispatch PromptPay] ส่งสัญญาณงานส่งถึงคนขับในระยะใกล้จำนวน %d ท่านเรียบร้อย\n",
+            len(nearbyDriverIDs))
         }
 
       case "failed":
