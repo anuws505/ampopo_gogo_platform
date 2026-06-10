@@ -132,3 +132,17 @@ curl -X POST http://localhost:8080/api/v1/omise/webhook \
     "status": "successful"
   }
 }'
+
+// เซ็นทรัลลาดพร้าว
+{
+  "event": "update_location",
+  "latitude": 13.8162,
+  "longitude": 100.5603
+}
+
+// สยามพารากอน
+{
+  "event": "update_location",
+  "latitude": 13.7469,
+  "longitude": 100.5393
+}

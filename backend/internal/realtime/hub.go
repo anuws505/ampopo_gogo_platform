@@ -2,12 +2,15 @@
 package realtime
 
 import (
+	"ampopo_gogo_platform/internal/core"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 )
 
 // Upgrader ตัวแปลงโปรโตคอลจาก HTTPธรรมดา ให้กลายเป็น WebSocket (ท่อสื่อสารสองทาง)
@@ -31,6 +34,13 @@ type Hub struct {
 
 func NewHub() *Hub {
   return &Hub{}
+}
+
+// LocationMessage โครงสร้างรับพิกัด GPS ย้อนศรมาจากแอปไรเดอร์ผ่านท่อ WebSocket
+type LocationMessage struct {
+  Event     string  `json:"event"` // e.g., "update_location"
+  Latitude  float64 `json:"latitude"`
+  Longitude float64 `json:"longitude"`
 }
 
 // HandleDriverConnection เอนพอยต์รับคนขับเข้ามาต่อท่อสายสัญญาณ
@@ -59,9 +69,29 @@ func (h *Hub) HandleDriverConnection(w http.ResponseWriter, r *http.Request, dri
 
   for {
     // นั่งฟังสายค้างไว้ ถ้าระบบหลุดลูปนี้แปลว่าสายตัด
-    _, _, err := conn.ReadMessage()
+    _, msgBytes, err := conn.ReadMessage()
     if err != nil {
       break
+    }
+
+    var msg LocationMessage
+    if err := json.Unmarshal(msgBytes, &msg); err == nil && msg.Event == "update_location" {
+      // เมื่อได้พิกัด ละติจูด/ลองจิจูด มาแล้ว
+      fmt.Printf("[GPS Update] Driver %s อยู่ที่ Lat: %f, Lng: %f\n", driverID, msg.Latitude, msg.Longitude)
+      
+      // สเต็ปถัดไป: ประกอบร่างพิกัดส่งเข้า Redis GEO
+      // ใช้คำสั่ง GeoAdd โดยตั้งชื่อ Key หลักของกระดานว่า "drivers:locations"
+      err := core.RDB.GeoAdd(r.Context(), "drivers:locations", &redis.GeoLocation{
+        Name:      driverID.String(), // ใช้ ID คนขับเป็นตัวระบุตัวตนในแผนที่
+        Latitude:  msg.Latitude,
+        Longitude: msg.Longitude,
+      }).Err()
+
+      if err != nil {
+        fmt.Printf("Redis GEOADD Error: %v\n", err)
+      } else {
+        fmt.Printf("[Redis GEO Saved] อัปเดตตำแหน่งไรเดอร์ %s ลงแรมเรียบร้อย\n", driverID)
+      }
     }
   }
 }
