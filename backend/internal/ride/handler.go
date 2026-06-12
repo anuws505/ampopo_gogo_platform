@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -184,7 +185,7 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
       }
 
     default:
-      core.WriteError(w, http.StatusBadRequest, "ช่องทางการชำระเงินไม่ถูกต้อง", "40014")
+      core.WriteError(w, http.StatusBadRequest, "Invalid payment method", "40014")
       return
   }
 
@@ -228,42 +229,9 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
   fmt.Printf("[DB Saved] Ride ID: %s created with status: %s\n",
     newRide.ID, newRide.Status)
 
-  // [REAL-TIME DISPATCH]
-  if req.PaymentMethod != "promptpay" {
-    // จัดก้อน Message เตรียมพ่นออกท่อ
-    jobOfferMessage := map[string]interface{}{
-      "event":            "new_ride_requested",
-      "ride_id":          newRide.ID.String(),
-      "vehicle_type":     newRide.VehicleType,
-      "origin_name":      newRide.OriginName,
-      "destination_name": newRide.DestinationName,
-      "distance_km":      newRide.DistanceKM,
-      "total_fare":       newRide.TotalFare,
-    }
-
-    // ส่งข้อมูล JSON นี้ส่งกระจายออกไปทุกสายที่เชื่อมต่ออยู่
-    // h.hub.BroadcastToDrivers(jobOfferMessage)
-    // fmt.Println("[WS Broadcast] ส่งข้อมูลงานใหม่พุ่งไปหาไรเดอร์ที่ออนไลน์อยู่เรียบร้อย")
-    
-    // ดึงค่าจาก decimal ที่เช็กผ่าน Error ด้านบนมาใช้เพื่อความปลอดภัย
-    lat := pickupLat.InexactFloat64()
-    lon := pickupLng.InexactFloat64()
-
-    // ยิงเรดาร์สแกนหาคนขับรอบตัวลูกค้าในรัศมี 3 กิโลเมตร 
-    nearbyDriverIDs, _ := h.hub.FindNearbyDrivers(r.Context(), lat, lon, 3.0)
-
-    // วนลูปส่งข้อความเจาะจงเฉพาะกลุ่มคนที่ Redis สแกนเจอพิกัดใกล้ตัวลูกค้า 3 กม.
-    for _, driverIDStr := range nearbyDriverIDs {
-      driverUUID, _ := uuid.Parse(driverIDStr)
-      h.hub.SendToSpecificDriver(driverUUID, jobOfferMessage) 
-    }
-    fmt.Printf("[Targeted Dispatch] ส่งสัญญาณงานส่งถึงคนขับในระยะใกล้จำนวน %d ท่านเรียบร้อย\n",
-      len(nearbyDriverIDs))
-  }
-
   // Return response
   core.WriteSuccess(w, http.StatusCreated,
-    "สร้างทริปและล็อกวงเงินเรียบร้อย กำลังจับคู่คนขับ", "20000",
+    "สร้างรายการทริปสำเร็จ กำลังจับคู่คนขับ", "20000",
     map[string]interface{}{
       "ride_id":     newRide.ID.String(),
       "charge_id":   newRide.OmiseChargeID,
@@ -308,10 +276,9 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
   }
 
   // สั่งอัปเดตข้อมูลผูกตัวคนขับและเปลี่ยนสถานะทริปผ่าน GORM
-  // ใช้ลอจิก Transaction หรือ Updates เจาะจงฟิลด์เพื่อความปลอดภัย
   updates := map[string]interface{}{
     "driver_id":  driverUUID,
-    "status":     "accepted", // เปลี่ยนสถานะเป็น "คนรับงานแล้ว"
+    "status":     "accepted",
     "updated_at": time.Now(),
   }
 
@@ -319,12 +286,21 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     core.WriteError(w, http.StatusInternalServerError, "ไม่สามารถบันทึกการรับงานลงฐานข้อมูลได้", "50003")
     return
   }
-
   fmt.Printf("[Driver Accepted] Ride ID: %s is taken by Driver ID: %s\n", ride.ID, req.DriverID)
 
-  // Return response กลับไปบอกแอปคนขับว่า "คุณกดรับงานสำเร็จแล้วนะ"
+  rideIDStr := ride.ID.String()
+  h.hub.DispatchedPairs.Range(func(key, value interface{}) bool {
+    keyStr := key.(string)
+    if strings.HasPrefix(keyStr, rideIDStr+":") {
+      h.hub.DispatchedPairs.Delete(key)
+    }
+    return true
+  })
+  fmt.Printf("[Bulk Lock Cleared] Purged all pending dispatch history for Ride ID: %s from memory\n", rideIDStr)
+
+  // Return response
   core.WriteSuccess(w, http.StatusOK,
-    "รับงานสำเร็จ เรียบร้อย", "20000",
+    "Trip accepted done", "20000",
     map[string]interface{}{
       "ride_id":   ride.ID.String(),
       "status":    "accepted",
@@ -354,7 +330,7 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
   // 1. ดึงข้อมูลทริปจาก DB มาเช็กว่าทริปนี้อยู่ในสถานะที่ควรจะปิดงานได้ไหม (เช่น ต้องเป็น accepted หรือ driving)
   var ride models.Ride
   if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
-    core.WriteError(w, http.StatusNotFound, "ไม่พบข้อมูลทริปดังกล่าว", "40401")
+    core.WriteError(w, http.StatusNotFound, "Trip not found", "40401")
     return
   }
 
@@ -382,11 +358,11 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
 
     case "promptpay":
       // หลังบ้านปล่อยไหลไปทำสเต็ปแจกเงินให้ไรเดอร์ใน DB ได้เลย
-      fmt.Printf("[PromptPay Complete] ไม่ต้องยิง Capture เพราะเงินสดอยู่ในคลัง Omise เรียบร้อยแล้ว ยอด: %s THB\n",
+      fmt.Printf("[PromptPay Complete] No capture required; funds automatically settled in Omise balance. Amount: %s THB\n",
         ride.TotalFare)
 
     default:
-      core.WriteError(w, http.StatusBadRequest, "ช่องทางการชำระเงินไม่ถูกต้อง", "40014")
+      core.WriteError(w, http.StatusBadRequest, "Invalid payment method", "40014")
       return
   }
 
@@ -401,7 +377,7 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
   }
   if err := tx.Model(&ride).Updates(rideUpdates).Error; err != nil {
     tx.Rollback()
-    core.WriteError(w, http.StatusInternalServerError, "อัปเดตสถานะทริปไม่สำเร็จ", "50005")
+    core.WriteError(w, http.StatusInternalServerError, "Update ride status fails", "50005")
     return
   }
 
@@ -579,7 +555,7 @@ func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Reques
     // ค้นหาทริปใน Postgres DB ที่ผูกกับ Charge ID ตัวนี้อยู่
     var ride models.Ride
     if err := core.DB.First(&ride, "omise_charge_id = ?", chargeID).Error; err != nil {
-      fmt.Printf("[Webhook Error] ไม่พบข้อมูลทริปสำหรับ Charge ID: %s\n", chargeID)
+      fmt.Printf("[Webhook Error] Not found trip data for Charge ID: %s\n", chargeID)
       w.WriteHeader(http.StatusOK) // ตอบ 200 กลับไปก่อนเพื่อไม่ให้ Omise พยายามยิงซ้ำ
       return
     }
@@ -595,37 +571,8 @@ func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Reques
             "updated_at":     time.Now(),
           }
           core.DB.Model(&ride).Updates(updates)
-          fmt.Printf("[Webhook Success] เงินเข้าจับคู่ทริปสำเร็จ! Ride ID: %s เปลี่ยนสถานะเป็น searching\n", ride.ID)
-
-          // จัดก้อน Message เตรียมพ่นออกท่อ
-          jobOfferMessage := map[string]interface{}{
-            "event":            "new_ride_requested",
-            "ride_id":          ride.ID.String(),
-            "vehicle_type":     ride.VehicleType,
-            "origin_name":      ride.OriginName,
-            "destination_name": ride.DestinationName,
-            "distance_km":      ride.DistanceKM,
-            "total_fare":       ride.TotalFare,
-          }
-
-          // ส่งข้อมูล JSON นี้ส่งกระจายออกไปทุกสายที่เชื่อมต่ออยู่
-          // h.hub.BroadcastToDrivers(jobOfferMessage)
-          // fmt.Println("[WS Broadcast] ส่งข้อมูลงานใหม่พุ่งไปหาไรเดอร์ที่ออนไลน์อยู่เรียบร้อย")
-
-          // ดึงค่าจาก decimal Ride struct มาใช้
-          lat := ride.PickupLatitude.InexactFloat64()
-          lon := ride.PickupLongitude.InexactFloat64()
-
-          // ยิงเรดาร์สแกนหาคนขับรอบตัวลูกค้าในรัศมี 3 กิโลเมตร 
-          nearbyDriverIDs, _ := h.hub.FindNearbyDrivers(r.Context(), lat, lon, 3.0)
-
-          // วนลูปส่งข้อความเจาะจงเฉพาะกลุ่มคนที่ Redis สแกนเจอพิกัดใกล้ตัวลูกค้า 3 กม.
-          for _, driverIDStr := range nearbyDriverIDs {
-            driverUUID, _ := uuid.Parse(driverIDStr)
-            h.hub.SendToSpecificDriver(driverUUID, jobOfferMessage) 
-          }
-          fmt.Printf("[Targeted Dispatch PromptPay] ส่งสัญญาณงานส่งถึงคนขับในระยะใกล้จำนวน %d ท่านเรียบร้อย\n",
-            len(nearbyDriverIDs))
+          fmt.Printf("[Webhook Success] Payment received, trip pairing completed! Ride ID: %s and status change to searching\n",
+            ride.ID)
         }
 
       case "failed":
@@ -637,7 +584,8 @@ func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Reques
             "updated_at":     time.Now(),
           }
           core.DB.Model(&ride).Updates(updates)
-          fmt.Printf("[Webhook Failed Log] ทริป Ride ID: %s ถูกปรับเป็น cancelled อัตโนมัติ เนื่องจากสแกนเงินล้มเหลว\n", ride.ID)
+          fmt.Printf("[Webhook Failed Log] Trip Ride ID: %s status change to cancelled automatically PromptPay payment fails\n",
+            ride.ID)
           
           // แถมเทคนิค: ตรงนี้สามารถส่ง WebSocket ไปบอกแอปฝั่งลูกค้า (Customer) ได้ด้วยนะ
           // ว่า "การชำระเงินไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" หน้าแอปจะได้เด้งเตือน
@@ -645,6 +593,6 @@ func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Reques
     }
   }
 
-  // ตอบกลับสถานะ 200 OK เพื่อบอก Omise ว่าหลังบ้านได้รับสัญญาณเรียบร้อยแล้ว
+  // ตอบกลับสถานะ 200 OK เพื่อบอกว่าได้รับสัญญาณเรียบร้อยแล้ว
   w.WriteHeader(http.StatusOK)
 }
