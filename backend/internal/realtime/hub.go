@@ -201,8 +201,6 @@ func (h *Hub) StartDispatchWorker(ctx context.Context) {
           dUUID, _ := uuid.Parse(dIDStr)
           h.SendToSpecificDriver(dUUID, jobOfferMessage)
         }
-        fmt.Printf("[Worker Dispatch] Repeat radar scan and found %d riders then send trips signals %s done\n",
-          len(nearbyDriverIDs), ride.ID)
       }
     }
   }

@@ -165,18 +165,16 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
       charge, err := h.omiseClient.CreateHoldCharge(req.CardToken, pricingResult.TotalFare)
       if err != nil {
         core.WriteError(w, http.StatusPaymentRequired,
-          "ล็อกวงเงินบัตรไม่สำเร็จ: "+err.Error(), "50001")
+          "Card authorization failed: "+err.Error(), "50001")
         return
       }
       omiseChargeIDPtr = &charge.ID
-      fmt.Printf("[Omise Hold Success] Charge ID: %s | Amount: %s THB\n",
-        charge.ID, pricingResult.TotalFare)
 
     case "promptpay":
       charge, err := h.omiseClient.CreatePromptPayCharge(pricingResult.TotalFare)
       if err != nil {
         core.WriteError(w, http.StatusInternalServerError,
-          "ไม่สามารถสร้าง QR Code ได้: "+err.Error(), "50010")
+          "Failed to generate PromptPay QR Code: "+err.Error(), "50010")
         return
       }
       omiseChargeIDPtr = &charge.ID
@@ -224,15 +222,13 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
   if err := core.DB.Create(&newRide).Error; err != nil {
     fmt.Printf("Database Insert Error: %v\n", err)
     core.WriteError(w, http.StatusInternalServerError,
-      "ไม่สามารถบันทึกข้อมูลทริปลงฐานข้อมูลได้", "50002")
+      "Failed to save ride details to database", "50002")
     return
   }
-  fmt.Printf("[DB Saved] Ride ID: %s created with status: %s\n",
-    newRide.ID, newRide.Status)
 
   // Return response
   core.WriteSuccess(w, http.StatusCreated,
-    "สร้างรายการทริปสำเร็จ กำลังจับคู่คนขับ", "20000",
+    "Ride created successfully and searching for nearby drivers", "20000",
     map[string]interface{}{
       "ride_id":     newRide.ID.String(),
       "charge_id":   newRide.OmiseChargeID,
@@ -305,8 +301,6 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     // ส่ง Error 400 บอกไรเดอร์ว่าอยู่นอกระยะงาน
     core.WriteError(w, http.StatusBadRequest,
       "This ride is no longer available because you are out of range", "40022")
-
-    fmt.Printf("[Rejected] Driver %s is out of range for ride %s\n", driverIDStr, rideIDStr)
     return
   }
 
@@ -322,8 +316,8 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
       "Failed to update ride status in database", "50003")
     return
   }
-  fmt.Printf("[Driver Accepted] Ride ID: %s is taken by Driver ID: %s\n", ride.ID, req.DriverID)
 
+  // Removed dispatch history for ride
   h.hub.DispatchedPairs.Range(func(key, value interface{}) bool {
     keyStr := key.(string)
     if strings.HasPrefix(keyStr, rideIDStr+":") {
@@ -331,7 +325,6 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     }
     return true
   })
-  fmt.Printf("[Cleaned] Removed dispatch history for ride %s from memory\n", rideIDStr)
 
   // Return response
   core.WriteSuccess(w, http.StatusOK,
@@ -403,7 +396,8 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
       // บัตรเครดิตต้องยิง Capture Charge เก็บเงินจริง
       _, err := h.omiseClient.CaptureCharge(*ride.OmiseChargeID)
       if err != nil {
-        core.WriteError(w, http.StatusInternalServerError, "ไม่สามารถเรียกเก็บเงินจาก Omise ได้: "+err.Error(), "50004")
+        core.WriteError(w, http.StatusInternalServerError,
+          "Failed to capture charge via Omise: "+err.Error(), "50004")
         return
       }
       fmt.Printf("[Omise Capture Success] Charged %s THB from Charge ID: %s\n",
@@ -411,8 +405,8 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
 
     case "promptpay":
       // หลังบ้านปล่อยไหลไปทำสเต็ปแจกเงินให้ไรเดอร์ใน DB ได้เลย
-      fmt.Printf("[PromptPay Complete] No capture required; funds automatically settled in Omise balance. Amount: %s THB\n",
-        ride.TotalFare)
+      fmt.Printf("[PromptPay Complete] No capture required amount %s THB from Charge ID: %s\n",
+        ride.TotalFare, *ride.OmiseChargeID)
 
     default:
       core.WriteError(w, http.StatusBadRequest, "Invalid payment method", "40014")
@@ -423,9 +417,11 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
   tx := core.DB.Begin()
 
   // 3.1 อัปเดตสถานะทริปเป็น completed
+  // credit_card authorized to paid
+  // promptpay pending to paid
   rideUpdates := map[string]interface{}{
     "status":         "completed",
-    "payment_status": "paid", // เปลี่ยนจาก pending เป็น paid
+    "payment_status": "paid",
     "updated_at":     time.Now(),
   }
   if err := tx.Model(&ride).Updates(rideUpdates).Error; err != nil {
@@ -445,17 +441,17 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
   // 3.3 บันทึกประวัติการเงินลงตารางบัญชีแยกประเภท (FinancialTransactions) หลังจบงาน
   txLog := models.FinancialTransaction{
     ID:          uuid.New(),
-    RideID:      &ride.ID,         // ผูกรหัสทริป
-    DriverID:    ride.DriverID,    // ผูกรหัสคนขับ (ได้ค่ามาจากตาราง ride ที่ accept ไว้)
-    TxType:      "earning",        // ระบุประเภทชัดเจนว่าเป็นรายได้จากการวิ่งงาน
-    Amount:      ride.DriverShare, // ยอดเงิน 81.70 บาท
-    Description: fmt.Sprintf("รายได้จากทริป %s -> %s", ride.OriginName, ride.DestinationName),
+    RideID:      &ride.ID,
+    DriverID:    ride.DriverID,
+    TxType:      "earning", // ระบุประเภทชัดเจนว่าเป็นรายได้จากการวิ่งงาน
+    Amount:      ride.DriverShare, // ยอดเงิน เช่น 81.70 บาท
+    Description: fmt.Sprintf("Earnings from ride: %s to %s", ride.OriginName, ride.DestinationName),
     CreatedAt:   time.Now(),
   }
   if err := tx.Create(&txLog).Error; err != nil {
     tx.Rollback()
     core.WriteError(w, http.StatusInternalServerError,
-      "ไม่สามารถบันทึกประวัติธุรกรรมได้", "50007")
+      "Failed to record financial transaction log.", "50007")
     return
   }
 
@@ -464,9 +460,9 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
   fmt.Printf("[DB Transaction Committed] Ride %s Completed. Wallet Updated for Driver: %v\n",
     ride.ID, ride.DriverID)
 
-  // 4. ส่ง Response ตอบกลับแอปคนขับว่า ปิดงานเสร็จสิ้น เงินเข้ากระเป๋าแล้วนะ!
+  // 4. ส่ง Response ตอบกลับ
   core.WriteSuccess(w, http.StatusOK,
-    "ปิดทริปและชำระเงินเสร็จสิ้น", "20000",
+    "Ride completed and payment processed successfully", "20000",
     map[string]interface{}{
       "ride_id":      ride.ID.String(),
       "status":       "completed",
@@ -503,7 +499,7 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
   // Safety Check: ทริปต้องไม่ถูกปิดงานไปแล้ว หรือถูกยกเลิกซ้ำซ้อน
   if ride.Status == "completed" {
     core.WriteError(w, http.StatusConflict,
-      "ไม่สามารถยกเลิกได้ เนื่องจากทริปนี้เดินทางสำเร็จและเก็บเงินไปแล้ว", "40903")
+      "Cannot cancel this ride, it has already been completed and charged", "40903")
     return
   }
   if ride.Status == "cancelled" {
@@ -521,7 +517,7 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
         _, err := h.omiseClient.ReverseCharge(*ride.OmiseChargeID)
         if err != nil {
           core.WriteError(w, http.StatusInternalServerError,
-            "ไม่สามารถปลดล็อกวงเงินบัตรเครดิตได้: "+err.Error(), "50008")
+            "Failed to reverse credit card charge: "+err.Error(), "50008")
           return
         }
         fmt.Printf("[Omise Reverse Success] Voided Charge ID: %s Credit limit released immediately\n",
@@ -533,7 +529,7 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
       if ride.Status == "pending_payment" {
         // ลูกค้ายังไม่ได้โอนเงินสแกนคิวอาร์ แล้วกดยกเลิกทริปไปก่อน ไม่ต้องคืนเงินใคร เปลี่ยนสเตตัสใน DB จบงานได้เลย
         targetPaymentStatus = "expired"
-        fmt.Println("[PromptPay Cancel] ยกเลิกงานก่อนสแกนจ่าย")
+        fmt.Println("[PromptPay Cancel] Ride cancelled before payment scanned")
 
       } else {
         // ลูกค้าโอนเงินสำเร็จแล้ว (สถานะกลายเป็น searching/accepted) แล้วโดนยกเลิกทริป ต้องทำการโอนเงินสดคืน (Refund)
@@ -543,11 +539,11 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
           if err != nil {
             // core.WriteError(w, http.StatusInternalServerError, "ไม่สามารถโอนเงินคืนลูกค้าผ่านระบบ PromptPay ได้: "+err.Error(), "50011")
             // return
-            fmt.Printf("[Omise Refund Bypass] คืนเงินออโต้ไม่สำเร็จเนื่องจาก: %v แต่ระบบจะปรับเป็นสถานะ รอแอดมินคืนเงิน เพื่อให้ทริปยกเลิกได้ปกติ\n", err)
+            fmt.Printf("[Omise Refund Bypass] Auto-refund failed: %v. Switched to manual refund queue for admin\n", err)
             targetPaymentStatus = "refund_pending"
           } else {
             targetPaymentStatus = "refunded"
-            fmt.Printf("[Omise Refund Success] โอนเงินคืนเข้าบัญชีลูกค้าสำเร็จยอด %s THB จาก Charge: %s\n",
+            fmt.Printf("[Omise Refund Success] Refunded %s THB to customer for Charge ID: %s\n",
               ride.TotalFare, *ride.OmiseChargeID)
           }
         }
@@ -563,19 +559,136 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
 
   if err := core.DB.Model(&ride).Updates(updates).Error; err != nil {
     core.WriteError(w, http.StatusInternalServerError,
-      "ไม่สามารถอัปเดตสถานะการยกเลิกทริปลงฐานข้อมูลได้", "50009")
+      "Failed to update cancellation status in database", "50009")
     return
   }
 
-  fmt.Printf("[Ride Cancelled] Ride ID: %s สถานะเปลี่ยนเป็น cancelled\n", ride.ID)
-
   // 4. ส่ง Response ตอบกลับ
   core.WriteSuccess(w, http.StatusOK,
-    "ยกเลิกทริปและจัดการระบบการเงินเรียบร้อย", "20000",
+    "Ride cancelled and payment reverted successfully", "20000",
     map[string]interface{}{
       "ride_id":        ride.ID.String(),
       "status":         "cancelled",
       "payment_status": targetPaymentStatus,
+    },
+  )
+}
+
+type ArriveRideRequest struct {
+  RideID string `json:"ride_id"`
+}
+
+func (h *RideHandler) ArriveRideEndpoint(w http.ResponseWriter, r *http.Request) {
+  var req ArriveRideRequest
+  if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
+    return
+  }
+
+  if req.RideID == "" {
+    core.WriteError(w, http.StatusBadRequest, "ride_id is required", "40002")
+    return
+  }
+
+  rideUUID, _ := uuid.Parse(req.RideID)
+  rideIDStr := rideUUID.String()
+
+  // ดึงข้อมูลทริปมาตรวจสอบสเตตัสปัจจุบัน
+  var ride models.Ride
+  if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
+    core.WriteError(w, http.StatusNotFound, "Ride does not exist", "40401")
+    return
+  }
+
+  // Safety Check: ทริปจะกดมาถึงจุดรับได้ ต้องถูกคนขับรับงานไปแล้ว (accepted) เท่านั้น
+  if ride.Status != "accepted" {
+    core.WriteError(w, http.StatusConflict,
+      "Invalid ride status for arrival configuration", "40905")
+    return
+  }
+
+  // อัปเดตสถานะทริปใน Postgres DB ให้กลายเป็น "arrived"
+  updates := map[string]interface{}{
+    "status":     "arrived",
+    "updated_at": time.Now(),
+  }
+
+  if err := core.DB.Model(&ride).Updates(updates).Error; err != nil {
+    core.WriteError(w, http.StatusInternalServerError,
+      "Failed to update arrival status in database", "50012")
+    return
+  }
+
+  // ส่งสัญญาณ Real-time ผ่าน WebSocket ดีดไปบอกฝั่งลูกค้า (Customer WebSocket Hub)
+  // customerNotification := map[string]interface{}{
+  //   "event":   "driver_arrived",
+  //   "ride_id": rideIDStr,
+  //   "message": "Your driver has arrived at the pickup location",
+  // }
+  // เรียกใช้ฟังก์ชันบรอดแคสต์หรือส่งเจาะจงหาลูกค้า (สมมติฝั่ง hub มีการเกาะสายไอดีลูกค้าไว้)
+  // h.hub.SendToSpecificCustomer(ride.CustomerID, customerNotification)
+  fmt.Printf("[Realtime Alert] Broadcaster queued: Driver is arrived for Customer %s\n", ride.CustomerID.String())
+
+  // ส่ง Response สำเร็จกลับไปหาไรเดอร์
+  core.WriteSuccess(w, http.StatusOK,
+    "Arrival status updated successfully", "20000",
+    map[string]interface{}{
+      "ride_id": rideIDStr,
+      "status":  "arrived",
+    },
+  )
+}
+
+type StartRideRequest struct {
+  RideID string `json:"ride_id"`
+}
+
+func (h *RideHandler) StartRideEndpoint(w http.ResponseWriter, r *http.Request) {
+  var req StartRideRequest
+  if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
+    return
+  }
+
+  if req.RideID == "" {
+    core.WriteError(w, http.StatusBadRequest, "ride_id is required", "40002")
+    return
+  }
+
+  rideUUID, _ := uuid.Parse(req.RideID)
+  rideIDStr := rideUUID.String()
+
+  // 1. ดึงข้อมูลทริปมาตรวจสอบสเตตัสปัจจุบัน
+  var ride models.Ride
+  if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
+    core.WriteError(w, http.StatusNotFound, "Ride does not exist", "40401")
+    return
+  }
+
+  // Safety Check: ทริปจะเริ่มออกเดินทางได้ ต้องผ่านสเตตัส arrived มาก่อนเท่านั้น
+  if ride.Status != "arrived" {
+    core.WriteError(w, http.StatusConflict, "Invalid ride status to start the trip.", "40906")
+    return
+  }
+
+  // 2. อัปเดตสถานะทริปใน Postgres DB ให้กลายเป็น "driving"
+  updates := map[string]interface{}{
+    "status":     "driving",
+    "updated_at": time.Now(),
+  }
+
+  if err := core.DB.Model(&ride).Updates(updates).Error; err != nil {
+    core.WriteError(w, http.StatusInternalServerError,
+      "Failed to update trip status to driving.", "50013")
+    return
+  }
+
+  // 3. ส่ง Response สำเร็จกลับไปหาไรเดอร์
+  core.WriteSuccess(w, http.StatusOK,
+    "Trip started successfully. Driving to destination.", "20000",
+    map[string]interface{}{
+      "ride_id": rideIDStr,
+      "status":  "driving",
     },
   )
 }
@@ -628,7 +741,7 @@ func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Reques
         }
 
       case "failed":
-        // เคสที่ 2: จ่ายล้มเหลว / ปล่อยคิวอาร์โค้ดหมดอายุ (เพิ่มเข้าไปใหม่)
+        // เคสที่ 2: จ่ายล้มเหลว / ปล่อยคิวอาร์โค้ดหมดอายุ
         if ride.Status == "pending_payment" {
           updates := map[string]interface{}{
             "status":         "cancelled",

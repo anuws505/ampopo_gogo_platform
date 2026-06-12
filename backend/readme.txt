@@ -83,10 +83,10 @@ curl -X POST http://localhost:8080/api/v1/rides/create \
   "vehicle_type": "car",
   "pickup_latitude": "13.816200",
   "pickup_longitude": "100.560300",
-  "distance_km": "10",
-  "duration_minutes": "18",
-  "surge_multiplier": "1.5",
-  "card_token": "xxx",
+  "distance_km": "5",
+  "duration_minutes": "10",
+  "surge_multiplier": "1.3",
+  "card_token": "xxxx",
   "payment_method": "promptpay",
   "origin_name": "เซ็นทรัลลาดพร้าว",
   "destination_name": "สยามพารากอน"
@@ -118,14 +118,14 @@ curl https://vault.omise.co/tokens \
 curl -X POST http://localhost:8080/api/v1/rides/accept \
 -H "Content-Type: application/json" \
 -d '{
-  "ride_id": "8dc0a32d-3a35-4b7c-8e84-8c02ff730505",
+  "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80",
   "driver_id": "00000000-0000-0000-0000-000000000002"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/complete \
 -H "Content-Type: application/json" \
 -d '{
-  "ride_id": "5b33091f-2b60-4c49-96f8-9523b6a4aaaa"
+  "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80"
 }'
 
 curl -X GET http://localhost:8080/api/v1/wallets/driver/00000000-0000-0000-0000-000000000002/summary
@@ -133,7 +133,19 @@ curl -X GET http://localhost:8080/api/v1/wallets/driver/00000000-0000-0000-0000-
 curl -X POST http://localhost:8080/api/v1/rides/cancel \
 -H "Content-Type: application/json" \
 -d '{
-  "ride_id": "8dc0a32d-3a35-4b7c-8e84-8c02ff730505"
+  "ride_id": "0bcffd91-0d0f-4ce3-8286-c2cbcf04d1ba"
+}'
+
+curl -X POST http://localhost:8080/api/v1/rides/arrive \
+-H "Content-Type: application/json" \
+-d '{
+  "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80"
+}'
+
+curl -X POST http://localhost:8080/api/v1/rides/start \
+-H "Content-Type: application/json" \
+-d '{
+  "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80"
 }'
 
 curl -X POST http://localhost:8080/api/v1/omise/webhook \
@@ -142,7 +154,7 @@ curl -X POST http://localhost:8080/api/v1/omise/webhook \
   "object": "event",
   "type": "charge.complete",
   "data": {
-    "id": "chrg_test_67zno1vtgt01rwhg7kq",
+    "id": "chrg_test_67zpllpjreat36emjgv",
     "status": "successful"
   }
 }'

@@ -112,7 +112,7 @@ func (o *OmiseClient) RefundCharge(chargeID string, amountTHB decimal.Decimal) (
 
   refundOp := &operations.CreateRefund{
     ChargeID: chargeID,
-    Amount:   amountSatang, // คืนเงินเต็มจำนวนตามราคาทริป
+    Amount:   amountSatang,
   }
 
   result := &omise.Refund{}
