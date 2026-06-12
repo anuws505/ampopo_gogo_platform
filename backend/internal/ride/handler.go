@@ -8,6 +8,7 @@ import (
 	"ampopo_gogo_platform/pkg/omise"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -264,14 +265,48 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
 
   var ride models.Ride
   if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
-    core.WriteError(w, http.StatusNotFound, "ไม่พบข้อมูลทริปดังกล่าวในระบบ", "40401")
+    core.WriteError(w, http.StatusNotFound, "Ride does not exist", "40401")
     return
   }
 
   // Safety Check: ป้องกันเคสคนขับ 2 คนกดปุ่มรับงานพร้อมกัน (Race Condition)
   // งานที่จะกดรับได้ ต้องมีสถานะเป็น "searching" และยังไม่มีคนขับผูกไว้เท่านั้น
   if ride.Status != "searching" || ride.DriverID != nil {
-    core.WriteError(w, http.StatusConflict, "งานนี้ถูกคนขับท่านอื่นรับไปเรียบร้อยแล้วครับ", "40901")
+    core.WriteError(w, http.StatusConflict,
+      "This ride has already been taken by another driver", "40901")
+    return
+  }
+
+  // ดึงพิกัดปัจจุบันของไรเดอร์คนนี้จาก Redis GEO
+  driverIDStr := driverUUID.String()
+  rideIDStr := ride.ID.String()
+
+  // ใช้คำสั่ง GeoPos เพื่อดึงพิกัดทศนิยมล่าสุดของไรเดอร์
+  positions, err := core.RDB.GeoPos(r.Context(), "drivers:locations", driverIDStr).Result()
+  if err != nil || len(positions) == 0 || positions[0] == nil {
+    core.WriteError(w, http.StatusBadRequest,
+      "Could not verify your current GPS location", "40021")
+    return
+  }
+  driverCurrentPos := positions[0]
+
+  // หากคำนวณสูตรคณิตศาสตร์พื้นฐาน (Haversine Formula)
+  driverLat := driverCurrentPos.Latitude
+  driverLng := driverCurrentPos.Longitude
+  pickupLat := ride.PickupLatitude.InexactFloat64()
+  pickupLng := ride.PickupLongitude.InexactFloat64()
+
+  // ตรวจสอบว่าระยะห่างเกินขอบเขตที่กำหนด:
+  if calculateDistance(driverLat, driverLng, pickupLat, pickupLng) > 3.0 {
+
+    // ล้างประวัติส่งงานค้างคู่นี้ออกจากแรมทันที เพื่อไม่ให้ส่ง Noti ซ้ำ
+    h.hub.DispatchedPairs.Delete(fmt.Sprintf("%s:%s", rideIDStr, driverIDStr))
+
+    // ส่ง Error 400 บอกไรเดอร์ว่าอยู่นอกระยะงาน
+    core.WriteError(w, http.StatusBadRequest,
+      "This ride is no longer available because you are out of range", "40022")
+
+    fmt.Printf("[Rejected] Driver %s is out of range for ride %s\n", driverIDStr, rideIDStr)
     return
   }
 
@@ -283,12 +318,12 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
   }
 
   if err := core.DB.Model(&ride).Updates(updates).Error; err != nil {
-    core.WriteError(w, http.StatusInternalServerError, "ไม่สามารถบันทึกการรับงานลงฐานข้อมูลได้", "50003")
+    core.WriteError(w, http.StatusInternalServerError,
+      "Failed to update ride status in database", "50003")
     return
   }
   fmt.Printf("[Driver Accepted] Ride ID: %s is taken by Driver ID: %s\n", ride.ID, req.DriverID)
 
-  rideIDStr := ride.ID.String()
   h.hub.DispatchedPairs.Range(func(key, value interface{}) bool {
     keyStr := key.(string)
     if strings.HasPrefix(keyStr, rideIDStr+":") {
@@ -296,17 +331,34 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     }
     return true
   })
-  fmt.Printf("[Bulk Lock Cleared] Purged all pending dispatch history for Ride ID: %s from memory\n", rideIDStr)
+  fmt.Printf("[Cleaned] Removed dispatch history for ride %s from memory\n", rideIDStr)
 
   // Return response
   core.WriteSuccess(w, http.StatusOK,
-    "Trip accepted done", "20000",
+    "Ride accepted successfully", "20000",
     map[string]interface{}{
       "ride_id":   ride.ID.String(),
       "status":    "accepted",
       "driver_id": req.DriverID,
     },
   )
+}
+
+// calculateDistance คำนวณหาความห่างระหว่างพิกัด 2 จุด (หน่วยเป็นกิโลเมตร) อิงตามสูตร Haversine
+func calculateDistance(lat1, lon1, lat2, lon2 float64) float64 {
+  const EarthRadiusKm = 6371.0
+
+  dLat := (lat2 - lat1) * math.Pi / 180.0
+  dLon := (lon2 - lon1) * math.Pi / 180.0
+
+  radLat1 := lat1 * math.Pi / 180.0
+  radLat2 := lat2 * math.Pi / 180.0
+
+  a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+    math.Sin(dLon/2)*math.Sin(dLon/2)*math.Cos(radLat1)*math.Cos(radLat2)
+  c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+
+  return EarthRadiusKm * c
 }
 
 type CompleteRideRequest struct {
@@ -330,13 +382,13 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
   // 1. ดึงข้อมูลทริปจาก DB มาเช็กว่าทริปนี้อยู่ในสถานะที่ควรจะปิดงานได้ไหม (เช่น ต้องเป็น accepted หรือ driving)
   var ride models.Ride
   if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
-    core.WriteError(w, http.StatusNotFound, "Trip not found", "40401")
+    core.WriteError(w, http.StatusNotFound, "Ride does not exist", "40401")
     return
   }
 
   if ride.Status == "completed" {
     core.WriteError(w, http.StatusConflict,
-      "ทริปนี้ถูกปิดงานและเก็บเงินไปเรียบร้อยแล้ว", "40902")
+      "This trip has already been completed and charged", "40902")
     return
   }
 
@@ -344,7 +396,8 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
   switch ride.PaymentMethod {
     case "credit_card":
       if ride.OmiseChargeID == nil || *ride.OmiseChargeID == "" {
-        core.WriteError(w, http.StatusBadRequest, "ทริปนี้ไม่มีรหัสการชำระเงินผ่านบัตรเครดิต", "40003")
+        core.WriteError(w, http.StatusBadRequest,
+          "This trip does not have a valid credit card token", "40003")
         return
       }
       // บัตรเครดิตต้องยิง Capture Charge เก็บเงินจริง
@@ -385,8 +438,7 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
   if err := tx.Exec("UPDATE driver_wallets SET balance = balance + ?, updated_at = ? WHERE driver_id = ?",
     ride.DriverShare, time.Now(), ride.DriverID).Error; err != nil {
     tx.Rollback()
-    core.WriteError(w, http.StatusInternalServerError,
-      "ไม่สามารถโอนส่วนแบ่งเข้ากระเป๋าคนขับได้", "50006")
+    core.WriteError(w, http.StatusInternalServerError, "Driver payout failed", "50006")
     return
   }
 
@@ -444,7 +496,7 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
   // 1. ดึงข้อมูลทริปมาตรวจสอบสถานะปัจจุบัน
   var ride models.Ride
   if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
-    core.WriteError(w, http.StatusNotFound, "ไม่พบข้อมูลทริปดังกล่าว", "40401")
+    core.WriteError(w, http.StatusNotFound, "Ride does not exist", "40401")
     return
   }
 
@@ -455,7 +507,7 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
     return
   }
   if ride.Status == "cancelled" {
-    core.WriteError(w, http.StatusConflict, "ทริปนี้ถูกยกเลิกไปก่อนหน้านี้เรียบร้อยแล้ว", "40904")
+    core.WriteError(w, http.StatusConflict, "Trip has been cancelled", "40904")
     return
   }
 
@@ -472,7 +524,7 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
             "ไม่สามารถปลดล็อกวงเงินบัตรเครดิตได้: "+err.Error(), "50008")
           return
         }
-        fmt.Printf("[Omise Reverse Success] Voided Charge ID: %s เรียบร้อย บัตรเครดิตลูกค้าได้วงเงินคืนทันที\n",
+        fmt.Printf("[Omise Reverse Success] Voided Charge ID: %s Credit limit released immediately\n",
           *ride.OmiseChargeID)
       }
 
