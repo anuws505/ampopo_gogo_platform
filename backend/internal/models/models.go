@@ -10,24 +10,25 @@ import (
 
 // 1. Customer Model (ตารางลูกค้า)
 type Customer struct {
-  ID          uuid.UUID       `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-  PhoneNumber string          `gorm:"type:varchar(20);unique;not null"`
-  FullName    string          `gorm:"type:varchar(100);not null"`
-  CreatedAt   time.Time       `gorm:"autoCreateTime"`
-  Rides       []Ride          `gorm:"foreignKey:CustomerID"`
+  ID                uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+  PhoneNumber       string    `gorm:"type:varchar(50);unique;not null"`
+  FirstName         string    `gorm:"type:varchar(100);not null"`
+  LastName          string    `gorm:"type:varchar(100);not null"`
+  IsProfileComplete bool      `gorm:"type:boolean;default:false"`
+  CreatedAt         time.Time `gorm:"autoCreateTime"`
 }
 
 // 2. Driver Model (ตารางคนขับ/ไรเดอร์)
 type Driver struct {
-  ID           uuid.UUID       `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-  PhoneNumber  string          `gorm:"type:varchar(20);unique;not null"`
-  FullName     string          `gorm:"type:varchar(100);not null"`
-  VehicleType  string          `gorm:"type:varchar(20);not null"` // 'bike' หรือ 'car'
-  VehiclePlate string          `gorm:"type:varchar(50);not null"` // ทะเบียนรถ
-  Status       string          `gorm:"type:varchar(20);default:'offline'"` // 'offline', 'online', 'busy'
-  CreatedAt    time.Time       `gorm:"autoCreateTime"`
-  Wallet       *DriverWallet   `gorm:"foreignKey:DriverID"`
-  Rides        []Ride          `gorm:"foreignKey:DriverID"`
+  ID                uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+  PhoneNumber       string    `gorm:"type:varchar(50);unique;not null"`
+  FirstName         string    `gorm:"type:varchar(100);not null"`
+  LastName          string    `gorm:"type:varchar(100);not null"`
+  VehicleType       string    `gorm:"type:varchar(20);not null"` // 'bike' หรือ 'car'
+  VehiclePlate      string    `gorm:"type:varchar(50);not null"` // ทะเบียนรถ
+  Status            string    `gorm:"type:varchar(20);default:'offline'"` // 'offline', 'online', 'busy'
+  IsProfileComplete bool      `gorm:"type:boolean;default:false"`
+  CreatedAt         time.Time `gorm:"autoCreateTime"`
 }
 
 // 3. DriverWallet Model (ตารางกระเป๋าเงินคนขับ)

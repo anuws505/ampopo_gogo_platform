@@ -2,6 +2,7 @@
 package main
 
 import (
+	"ampopo_gogo_platform/internal/auth"
 	"ampopo_gogo_platform/internal/core"
 	"ampopo_gogo_platform/internal/models"
 	"ampopo_gogo_platform/internal/realtime"
@@ -53,6 +54,12 @@ func main() {
   r.HandleFunc("/api/v1/rides/arrive", rideHandler.ArriveRideEndpoint).Methods("POST")
   r.HandleFunc("/api/v1/rides/start", rideHandler.StartRideEndpoint).Methods("POST")
   r.HandleFunc("/api/v1/omise/webhook", rideHandler.OmiseWebhookEndpoint).Methods("POST")
+
+  authHandler := auth.NewAuthHandler()
+  r.HandleFunc("/api/v1/auth/request-otp", authHandler.RequestOTPEndpoint).Methods("POST")
+  r.HandleFunc("/api/v1/auth/verify-otp", authHandler.VerifyOTPEndpoint).Methods("POST")
+  r.HandleFunc("/api/v1/auth/confirm-owner", authHandler.ConfirmOwnerEndpoint).Methods("POST")
+  r.HandleFunc("/api/v1/auth/register", authHandler.RegisterEndpoint).Methods("POST")
 
   // ประกาศชิ้นส่วนฝั่ง Wallet
   walletService := wallet.NewWalletService()

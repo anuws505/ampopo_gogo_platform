@@ -158,3 +158,37 @@ curl -X POST http://localhost:8080/api/v1/omise/webhook \
     "status": "successful"
   }
 }'
+
+
+curl -X POST http://localhost:8080/api/v1/auth/request-otp \
+-H "Content-Type: application/json" \
+-d '{
+  "phone_number": "0812345888"
+}'
+
+curl -X POST http://localhost:8080/api/v1/auth/verify-otp \
+-H "Content-Type: application/json" \
+-d '{
+  "phone_number": "0812345888",
+  "otp_code": "332650",
+  "role": "driver"
+}'
+
+curl -X POST http://localhost:8080/api/v1/auth/confirm-owner \
+-H "Content-Type: application/json" \
+-d '{
+  "phone_number": "0812345888",
+  "confirmed_name": "driver777",
+  "role": "driver"
+}'
+
+curl -X POST http://localhost:8080/api/v1/auth/register \
+-H "Content-Type: application/json" \
+-d '{
+  "phone_number": "0812345888",
+  "role": "driver",
+  "first_name": "amsorry",
+  "last_name": "thankyou",
+  "vehicle_type": "car",
+  "vehicle_plate": "2VD3321"
+}'
