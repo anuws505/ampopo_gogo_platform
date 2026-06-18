@@ -4,6 +4,7 @@ package auth
 import (
 	"ampopo_gogo_platform/internal/core"
 	"ampopo_gogo_platform/internal/models"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -17,10 +18,12 @@ import (
 )
 
 const (
-  OTP_PREFIX    = "otp:"
-  VERIFY_PREFIX = "verified:"
-  OTP_TTL       = 5 * time.Minute  // รหัส OTP มีอายุขัย 5 นาที (300 วินาที)
-  VERIFY_TTL    = 10 * time.Minute // ยืนยันผ่านแล้ว มีเวลาให้ดำเนินการสเต็ปถัดไป 10 นาที
+  OTP_PREFIX     = "otp:"
+  VERIFY_PREFIX  = "verified:"
+  SESSION_PREFIX = "session:"
+  OTP_TTL        = 5 * time.Minute  // รหัส OTP มีอายุขัย 5 นาที (300 วินาที)
+  VERIFY_TTL     = 10 * time.Minute // ยืนยันผ่านแล้ว มีเวลาให้ดำเนินการสเต็ปถัดไป 10 นาที
+  SESSION_TTL    = 720 * time.Hour  // เท่ากับอายุของตั๋ว JWT (30 วัน = 720 ชั่วโมง)
 )
 
 var secretKey = core.GetEnv("AUTH_SECRET_KEY", "a-string-secret-at-least-256-bits-long")
@@ -470,8 +473,34 @@ func (h *AuthHandler) createToken(userID uuid.UUID, phone, role string) (string,
     "user_id":      userID.String(),
     "phone_number": phone,
     "role":         role,
-    "exp":          time.Now().Add(730 * time.Hour).Unix(), // อายุ 30 วัน
+    "exp":          time.Now().Add(SESSION_TTL).Unix(), // อายุ 30 วัน
     "iat":          time.Now().Unix(),
   })
-  return token.SignedString(jwtSecretKey)
+
+  tokenStr, err := token.SignedString(jwtSecretKey)
+  if err != nil {
+    return "", err
+  }
+
+  // ผูกตั๋วใบนี้ไว้ในแรม Redis "session:user-uuid-xxxx" เก็บค่าเป็นตัว "jwt-string"
+  ctx := context.Background()
+  redisKey := SESSION_PREFIX + userID.String()
+
+  err = core.RDB.Set(ctx, redisKey, tokenStr, SESSION_TTL).Err()
+  if err != nil {
+    return "", fmt.Errorf("failed to save token to redis: %v", err)
+  }
+
+  return tokenStr, nil
+}
+
+func (h *AuthHandler) LogoutEndpoint(w http.ResponseWriter, r *http.Request) {
+  // ดึงไอดีที่แกะได้มาจากด่าน Middleware
+  userID := r.Context().Value(UserIDKey).(string)
+  
+  // สั่งระเบิดคีย์ทิ้งในแรม ทหารยามที่ด่านจะล็อกทันที!
+  _ = core.RDB.Del(r.Context(), SESSION_PREFIX + userID).Err()
+  
+  core.WriteSuccess(w, http.StatusOK,
+    "Logged out successfully", "20000", nil)
 }

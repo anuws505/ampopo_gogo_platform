@@ -2,6 +2,7 @@
 package wallet
 
 import (
+	"ampopo_gogo_platform/internal/auth"
 	"ampopo_gogo_platform/internal/core"
 	"net/http"
 	"strconv"
@@ -20,15 +21,28 @@ func NewWalletHandler(ws *WalletService) *WalletHandler {
   }
 }
 
-// GetWalletSummaryEndpoint รวมยอดเงินคงเหลือและประวัติธุรกรรมล่าสุดส่งกลับใน API เดียว
 func (h *WalletHandler) GetWalletSummaryEndpoint(w http.ResponseWriter, r *http.Request) {
-  // ดึง driver_id จาก URL Path เช่น /api/v1/wallets/driver/{driver_id}/summary
+  ctxUserID := r.Context().Value(auth.UserIDKey)
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized, 
+      "Unauthorized access. Missing session identity.", "40101")
+    return
+  }
+  tokenUserIDStr := ctxUserID.(string)
+
   vars := mux.Vars(r)
   driverIDStr := vars["driver_id"]
 
+  if tokenUserIDStr != driverIDStr {
+    core.WriteError(w, http.StatusForbidden, 
+      "Access denied. You do not have permission to view this wallet profile.", "40305")
+    return
+  }
+
   driverUUID, err := uuid.Parse(driverIDStr)
   if err != nil {
-    core.WriteError(w, http.StatusBadRequest, "รูปแบบรหัสคนขับ (driver_id) ไม่ถูกต้อง", "40021")
+    core.WriteError(w, http.StatusBadRequest,
+      "Invalid driver identity key format.", "40021")
     return
   }
 
@@ -49,7 +63,8 @@ func (h *WalletHandler) GetWalletSummaryEndpoint(w http.ResponseWriter, r *http.
 
   transactions, err := h.walletService.GetTransactionHistory(driverUUID, limit)
   if err != nil {
-    core.WriteError(w, http.StatusInternalServerError, "ไม่สามารถเรียกดูประวัติธุรกรรมได้", "50021")
+    core.WriteError(w, http.StatusInternalServerError,
+      "Failed to retrieve wallet statement and transaction history.", "50021")
     return
   }
 
@@ -61,5 +76,6 @@ func (h *WalletHandler) GetWalletSummaryEndpoint(w http.ResponseWriter, r *http.
     "transactions": transactions,
   }
 
-  core.WriteSuccess(w, http.StatusOK, "ดึงข้อมูลกระเป๋าเงินสำเร็จ", "20000", response)
+  core.WriteSuccess(w, http.StatusOK,
+    "Wallet snapshot and statements retrieved successfully.", "20000", response)
 }

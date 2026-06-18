@@ -52,7 +52,7 @@ docker run --network backend_default \
   -e DB_NAME=ampopo_gogo \
   -e DB_PORT=5432 \
   -e REDIS_ADDR=cache:6379 \
-  -e UTH_SECRET_KEY=a-string-secret-at-least-256-bits-long \
+  -e AUTH_SECRET_KEY=a-string-secret-at-least-256-bits-long \
   -e OMISE_PUBLIC_KEY=pkey_test_5gyi3jzoz07f9o26x5t \
   -e OMISE_SECRET_KEY=skey_test_5gyi3jzp0b5dhnux2m3 \
   ampopo_gogo_platform:v1
@@ -128,7 +128,9 @@ curl -X POST http://localhost:8080/api/v1/rides/complete \
   "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80"
 }'
 
-curl -X GET http://localhost:8080/api/v1/wallets/driver/00000000-0000-0000-0000-000000000002/summary
+curl -X GET http://localhost:8080/api/v1/wallets/driver/00000000-0000-0000-0000-000000000002/summary \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx"
 
 curl -X POST http://localhost:8080/api/v1/rides/cancel \
 -H "Content-Type: application/json" \

@@ -46,13 +46,8 @@ func main() {
   rideHandler := ride.NewRideHandler(pricingService, omiseClient, realtimeHub)
 
   // 3. ตั้งค่าเส้นทาง HTTP ROUTES
+  // กลุ่มที่ 1: เส้นทางสาธารณะ (Public Routes - ไม่ต้องแนบตั๋ว JWT ก็ยิงได้)
   r.HandleFunc("/api/v1/rides/estimate", rideHandler.EstimateFareEndpoint).Methods("POST")
-  r.HandleFunc("/api/v1/rides/create", rideHandler.CreateRideEndpoint).Methods("POST")
-  r.HandleFunc("/api/v1/rides/accept", rideHandler.AcceptRideEndpoint).Methods("POST")
-  r.HandleFunc("/api/v1/rides/complete", rideHandler.CompleteRideEndpoint).Methods("POST")
-  r.HandleFunc("/api/v1/rides/cancel", rideHandler.CancelRideEndpoint).Methods("POST")
-  r.HandleFunc("/api/v1/rides/arrive", rideHandler.ArriveRideEndpoint).Methods("POST")
-  r.HandleFunc("/api/v1/rides/start", rideHandler.StartRideEndpoint).Methods("POST")
   r.HandleFunc("/api/v1/omise/webhook", rideHandler.OmiseWebhookEndpoint).Methods("POST")
 
   authHandler := auth.NewAuthHandler()
@@ -60,12 +55,24 @@ func main() {
   r.HandleFunc("/api/v1/auth/verify-otp", authHandler.VerifyOTPEndpoint).Methods("POST")
   r.HandleFunc("/api/v1/auth/confirm-owner", authHandler.ConfirmOwnerEndpoint).Methods("POST")
   r.HandleFunc("/api/v1/auth/register", authHandler.RegisterEndpoint).Methods("POST")
+  r.HandleFunc("/api/v1/auth/logout", authHandler.LogoutEndpoint).Methods("POST")
+
+  // กลุ่มที่ 2: เส้นทางปลอดภัย (Protected Routes - ต้องตรวจตั๋ว JWT ก่อนเสมอ)
+  protected := r.PathPrefix("/api/v1").Subrouter()
+  protected.Use(auth.AuthMiddleware)
+
+  protected.HandleFunc("/rides/create", rideHandler.CreateRideEndpoint).Methods("POST")
+  protected.HandleFunc("/rides/accept", rideHandler.AcceptRideEndpoint).Methods("POST")
+  protected.HandleFunc("/rides/arrive", rideHandler.ArriveRideEndpoint).Methods("POST")
+  protected.HandleFunc("/rides/start", rideHandler.StartRideEndpoint).Methods("POST")
+  protected.HandleFunc("/rides/complete", rideHandler.CompleteRideEndpoint).Methods("POST")
+  protected.HandleFunc("/rides/cancel", rideHandler.CancelRideEndpoint).Methods("POST")
 
   // ประกาศชิ้นส่วนฝั่ง Wallet
   walletService := wallet.NewWalletService()
   walletHandler := wallet.NewWalletHandler(walletService)
 
-  r.HandleFunc("/api/v1/wallets/driver/{driver_id}/summary", walletHandler.GetWalletSummaryEndpoint).Methods("GET")
+  protected.HandleFunc("/wallets/driver/{driver_id}/summary", walletHandler.GetWalletSummaryEndpoint).Methods("GET")
 
   // ==========================================
   // REAL-TIME WEBSOCKET ENDPOINT
