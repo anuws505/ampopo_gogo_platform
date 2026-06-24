@@ -172,7 +172,7 @@ curl -X POST http://localhost:8080/api/v1/auth/verify-otp \
 -H "Content-Type: application/json" \
 -d '{
   "phone_number": "0812345888",
-  "otp_code": "332650",
+  "otp_code": "569701",
   "role": "driver"
 }'
 
@@ -180,7 +180,7 @@ curl -X POST http://localhost:8080/api/v1/auth/confirm-owner \
 -H "Content-Type: application/json" \
 -d '{
   "phone_number": "0812345888",
-  "confirmed_name": "driver777",
+  "confirmed_name": "amdriver",
   "role": "driver"
 }'
 
@@ -189,8 +189,43 @@ curl -X POST http://localhost:8080/api/v1/auth/register \
 -d '{
   "phone_number": "0812345888",
   "role": "driver",
-  "first_name": "amsorry",
-  "last_name": "thankyou",
+  "first_name": "amdriver",
+  "last_name": "gogogo",
   "vehicle_type": "car",
-  "vehicle_plate": "2VD3321"
+  "vehicle_plate": "2AB5678"
 }'
+
+curl -X POST http://localhost:8080/api/v1/auth/recycle-register \
+-H "Content-Type: application/json" \
+-d '{
+  "phone_number": "0812345888",
+  "role": "driver",
+  "first_name": "amdriver",
+  "last_name": "gogogo",
+  "vehicle_type": "bike",
+  "vehicle_plate": "2AB5678"
+}'
+
+curl -X POST http://localhost:8080/api/v1/auth/logout \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx"
+
+
+
+
+
+auth
+- request-otp
+- verify-otp
+- confirm-owner
+- register
+- recycle-register
+- logout
+
+ride
+- create
+- accept
+- arrive
+- start
+- complete
+- cancel

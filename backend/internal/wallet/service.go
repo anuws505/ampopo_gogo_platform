@@ -22,7 +22,7 @@ func (s *WalletService) GetWalletBalance(driverID uuid.UUID) (*models.DriverWall
   err := core.DB.First(&wallet, "driver_id = ?", driverID).Error
   if err != nil {
     if errors.Is(err, gorm.ErrRecordNotFound) {
-      return nil, errors.New("ไม่พบกระเป๋าเงินของคนขับท่านนี้ในระบบ")
+      return nil, errors.New("Driver wallet not found")
     }
     return nil, err
   }

@@ -55,12 +55,13 @@ func main() {
   r.HandleFunc("/api/v1/auth/verify-otp", authHandler.VerifyOTPEndpoint).Methods("POST")
   r.HandleFunc("/api/v1/auth/confirm-owner", authHandler.ConfirmOwnerEndpoint).Methods("POST")
   r.HandleFunc("/api/v1/auth/register", authHandler.RegisterEndpoint).Methods("POST")
-  r.HandleFunc("/api/v1/auth/logout", authHandler.LogoutEndpoint).Methods("POST")
+  r.HandleFunc("/api/v1/auth/recycle-register", authHandler.RecycleAndRegisterEndpoint).Methods("POST")
 
   // กลุ่มที่ 2: เส้นทางปลอดภัย (Protected Routes - ต้องตรวจตั๋ว JWT ก่อนเสมอ)
   protected := r.PathPrefix("/api/v1").Subrouter()
   protected.Use(auth.AuthMiddleware)
 
+  protected.HandleFunc("/auth/logout", authHandler.LogoutEndpoint).Methods("POST")
   protected.HandleFunc("/rides/create", rideHandler.CreateRideEndpoint).Methods("POST")
   protected.HandleFunc("/rides/accept", rideHandler.AcceptRideEndpoint).Methods("POST")
   protected.HandleFunc("/rides/arrive", rideHandler.ArriveRideEndpoint).Methods("POST")
