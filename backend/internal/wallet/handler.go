@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
-	"github.com/gorilla/mux"
 )
 
 type WalletHandler struct {
@@ -25,24 +24,15 @@ func (h *WalletHandler) GetWalletSummaryEndpoint(w http.ResponseWriter, r *http.
   ctxUserID := r.Context().Value(auth.UserIDKey)
   if ctxUserID == nil {
     core.WriteError(w, http.StatusUnauthorized, 
-      "Unauthorized access. Missing session identity.", "40101")
+      "Unauthorized access. Missing session identity", "40101")
     return
   }
-  tokenUserIDStr := ctxUserID.(string)
-
-  vars := mux.Vars(r)
-  driverIDStr := vars["driver_id"]
-
-  if tokenUserIDStr != driverIDStr {
-    core.WriteError(w, http.StatusForbidden, 
-      "Access denied. You do not have permission to view this wallet profile.", "40305")
-    return
-  }
+  driverIDStr := ctxUserID.(string)
 
   driverUUID, err := uuid.Parse(driverIDStr)
   if err != nil {
     core.WriteError(w, http.StatusBadRequest,
-      "Invalid driver identity key format.", "40021")
+      "Invalid driver identity key format", "40021")
     return
   }
 
@@ -64,7 +54,7 @@ func (h *WalletHandler) GetWalletSummaryEndpoint(w http.ResponseWriter, r *http.
   transactions, err := h.walletService.GetTransactionHistory(driverUUID, limit)
   if err != nil {
     core.WriteError(w, http.StatusInternalServerError,
-      "Failed to retrieve wallet statement and transaction history.", "50021")
+      "Failed to retrieve wallet statement and transaction history", "50021")
     return
   }
 
@@ -77,5 +67,5 @@ func (h *WalletHandler) GetWalletSummaryEndpoint(w http.ResponseWriter, r *http.
   }
 
   core.WriteSuccess(w, http.StatusOK,
-    "Wallet snapshot and statements retrieved successfully.", "20000", response)
+    "Wallet snapshot and statements retrieved successfully", "20000", response)
 }

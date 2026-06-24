@@ -48,7 +48,7 @@ func main() {
   // 3. ตั้งค่าเส้นทาง HTTP ROUTES
   // กลุ่มที่ 1: เส้นทางสาธารณะ (Public Routes - ไม่ต้องแนบตั๋ว JWT ก็ยิงได้)
   r.HandleFunc("/api/v1/rides/estimate", rideHandler.EstimateFareEndpoint).Methods("POST")
-  r.HandleFunc("/api/v1/omise/webhook", rideHandler.OmiseWebhookEndpoint).Methods("POST")
+  r.HandleFunc("/api/v1/payments/omise/webhook", rideHandler.OmiseWebhookEndpoint).Methods("POST")
 
   authHandler := auth.NewAuthHandler()
   r.HandleFunc("/api/v1/auth/request-otp", authHandler.RequestOTPEndpoint).Methods("POST")
@@ -73,7 +73,7 @@ func main() {
   walletService := wallet.NewWalletService()
   walletHandler := wallet.NewWalletHandler(walletService)
 
-  protected.HandleFunc("/wallets/driver/{driver_id}/summary", walletHandler.GetWalletSummaryEndpoint).Methods("GET")
+  protected.HandleFunc("/wallets/driver/summary", walletHandler.GetWalletSummaryEndpoint).Methods("GET")
 
   // ==========================================
   // REAL-TIME WEBSOCKET ENDPOINT

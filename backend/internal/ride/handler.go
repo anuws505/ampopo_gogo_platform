@@ -751,7 +751,7 @@ func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Reques
           core.DB.Model(&ride).Updates(updates)
           fmt.Printf("[Webhook Failed Log] Trip Ride ID: %s status change to cancelled automatically PromptPay payment fails\n",
             ride.ID)
-          
+
           // แถมเทคนิค: ตรงนี้สามารถส่ง WebSocket ไปบอกแอปฝั่งลูกค้า (Customer) ได้ด้วยนะ
           // ว่า "การชำระเงินไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" หน้าแอปจะได้เด้งเตือน
         }

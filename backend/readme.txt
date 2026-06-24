@@ -122,22 +122,6 @@ curl -X POST http://localhost:8080/api/v1/rides/accept \
   "driver_id": "00000000-0000-0000-0000-000000000002"
 }'
 
-curl -X POST http://localhost:8080/api/v1/rides/complete \
--H "Content-Type: application/json" \
--d '{
-  "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80"
-}'
-
-curl -X GET http://localhost:8080/api/v1/wallets/driver/00000000-0000-0000-0000-000000000002/summary \
--H "Content-Type: application/json" \
--H "Authorization: Bearer xxxxx"
-
-curl -X POST http://localhost:8080/api/v1/rides/cancel \
--H "Content-Type: application/json" \
--d '{
-  "ride_id": "0bcffd91-0d0f-4ce3-8286-c2cbcf04d1ba"
-}'
-
 curl -X POST http://localhost:8080/api/v1/rides/arrive \
 -H "Content-Type: application/json" \
 -d '{
@@ -150,7 +134,19 @@ curl -X POST http://localhost:8080/api/v1/rides/start \
   "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80"
 }'
 
-curl -X POST http://localhost:8080/api/v1/omise/webhook \
+curl -X POST http://localhost:8080/api/v1/rides/complete \
+-H "Content-Type: application/json" \
+-d '{
+  "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80"
+}'
+
+curl -X POST http://localhost:8080/api/v1/rides/cancel \
+-H "Content-Type: application/json" \
+-d '{
+  "ride_id": "0bcffd91-0d0f-4ce3-8286-c2cbcf04d1ba"
+}'
+
+curl -X POST http://localhost:8080/api/v1/payments/omise/webhook \
 -H "Content-Type: application/json" \
 -d '{
   "object": "event",
@@ -160,6 +156,11 @@ curl -X POST http://localhost:8080/api/v1/omise/webhook \
     "status": "successful"
   }
 }'
+
+curl -X GET http://localhost:8080/api/v1/wallets/driver/summary \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx"
+
 
 
 curl -X POST http://localhost:8080/api/v1/auth/request-otp \
