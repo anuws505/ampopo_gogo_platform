@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
 
@@ -79,19 +78,9 @@ func main() {
   // REAL-TIME WEBSOCKET ENDPOINT
   // ==========================================
   // เส้นทางนี้ให้แอป Flutter ฝั่งไรเดอร์ใช้เกาะสายสัญญาณค้างไว้ตอนเปิดแอปเปิดระบบ Online
-  r.HandleFunc("/api/v1/realtime/driver/{driver_id}", func(w http.ResponseWriter, r *http.Request) {
-    vars := mux.Vars(r)
-    driverIDStr := vars["driver_id"]
-
-    driverUUID, err := uuid.Parse(driverIDStr)
-    if err != nil {
-      http.Error(w, "รูปแบบรหัสไรเดอร์ไม่ถูกต้อง", http.StatusBadRequest)
-      return
-    }
-
-    // สั่งให้ Hub จัดการเปลี่ยน Protocol และคุมท่อสื่อสารของไรเดอร์คนนี้
-    realtimeHub.HandleDriverConnection(w, r, driverUUID)
-  }).Methods("GET") // WebSocket จะเริ่มคุยด้วย Method "GET" เสมอ
+  // WebSocket จะเริ่มคุยด้วย Method "GET" เสมอ
+  protected.HandleFunc("/realtime/driver", realtimeHub.HandleDriverConnection).Methods("GET")
+  protected.HandleFunc("/realtime/driver/toggle-status", realtimeHub.ToggleStatusEndpoint).Methods("POST")
 
   // Workers
   go realtimeHub.StartDispatchWorker(core.Ctx)

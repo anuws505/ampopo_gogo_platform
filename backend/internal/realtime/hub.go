@@ -2,6 +2,7 @@
 package realtime
 
 import (
+	"ampopo_gogo_platform/internal/auth"
 	"ampopo_gogo_platform/internal/core"
 	"ampopo_gogo_platform/internal/models"
 	"context"
@@ -48,7 +49,16 @@ type LocationMessage struct {
 }
 
 // HandleDriverConnection เอนพอยต์รับคนขับเข้ามาต่อท่อสายสัญญาณ
-func (h *Hub) HandleDriverConnection(w http.ResponseWriter, r *http.Request, driverID uuid.UUID) {
+func (h *Hub) HandleDriverConnection(w http.ResponseWriter, r *http.Request) {
+  ctxUserID := r.Context().Value(auth.UserIDKey)
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized,
+      "Unauthorized. Missing session identity.", "40101")
+    return
+  }
+  driverIDStr := ctxUserID.(string)
+  driverUUID, _ := uuid.Parse(driverIDStr)
+
   conn, err := upgrader.Upgrade(w, r, nil)
   if err != nil {
     fmt.Printf("WebSocket Upgrade Error: %v\n", err)
@@ -56,19 +66,26 @@ func (h *Hub) HandleDriverConnection(w http.ResponseWriter, r *http.Request, dri
   }
 
   client := &DriverClient{
-    DriverID: driverID,
+    DriverID: driverUUID,
     Conn:     conn,
   }
 
-  // บันทึกลงสมุดรายชื่อว่าคนขับไอดีนี้ กำลังออนไลน์อยู่
-  h.ActiveDrivers.Store(driverID, client)
-  fmt.Printf("[WS Connected] Driver ID: %s realtime systems connected\n", driverID)
+  h.ActiveDrivers.Store(driverUUID, client)
 
-  // ลูปเปิดหูรอฟัง เผื่อคนขับส่งข้อมูลอะไรกลับมา หรือถ้าตัดสายไปจะรีบเคลียร์รายชื่อออก
+  // [DRIVER STATE] ทันทีที่ต่อท่อสำเร็จ สั่งตั้งค่าคนขับให้เป็นสถานะออนไลน์ในฐานข้อมูล
+  _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).Update("status", "online").Error
+  fmt.Printf("[WS Connected] Driver ID: %s status changed to online\n", driverIDStr)
+
+  // ลูปเปิดหูรอฟัง เผื่อคนขับส่งข้อมูลอะไรกลับมา หรือถ้าตัดสายไปจะได้เคลียร์รายชื่อออก
   defer func() {
-    h.ActiveDrivers.Delete(driverID)
+    h.ActiveDrivers.Delete(driverUUID)
     conn.Close()
-    fmt.Printf("[WS Disconnected] Driver ID: %s logged out realtime systems\n", driverID)
+    
+    // [DRIVER STATE] สายหลุด/ปิดแอป สั่งเปลี่ยนเป็น offline และลบพิกัดออกจากเรดาร์ทันที
+    _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).Update("status", "offline").Error
+    _ = core.RDB.ZRem(context.Background(), "drivers:locations", driverIDStr).Err()
+    
+    fmt.Printf("[WS Disconnected] Driver ID: %s status changed to offline and removed from GEO\n", driverIDStr)
   }()
 
   for {
@@ -80,40 +97,24 @@ func (h *Hub) HandleDriverConnection(w http.ResponseWriter, r *http.Request, dri
 
     var msg LocationMessage
     if err := json.Unmarshal(msgBytes, &msg); err == nil && msg.Event == "update_location" {
-      fmt.Printf("[GPS Update] Driver %s at Lat: %f, Lng: %f\n", driverID, msg.Latitude, msg.Longitude)
+      // [PROD CHECK] เช็กสเตตัสใน DB ก่อน หากคนขับกดพักงาน (offline) หรือติดทริปอื่น (busy) ไม่ต้องอัปเดตตำแหน่งลงเรดาร์สแกนงาน
+      var currentStatus string
+      err := core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).Pluck("status", &currentStatus).Error
+      if err != nil || currentStatus != "online" {
+        continue // ข้ามการบันทึกพิกัดรอบนี้ไปเลย ไม่กวนระบบเรดาร์
+      }
+
+      fmt.Printf("[GPS Update] Driver %s at Lat: %f, Lng: %f\n", driverIDStr, msg.Latitude, msg.Longitude)
       
-      // ประกอบร่างพิกัดส่งเข้า Redis GEO
-      // ใช้คำสั่ง GeoAdd โดยตั้งชื่อ Key ว่า "drivers:locations"
-      err := core.RDB.GeoAdd(r.Context(), "drivers:locations", &redis.GeoLocation{
-        Name:      driverID.String(),
+      // ส่งพิกัดเข้า Redis GEO เฉพาะตอนที่พร้อมรับงานจริง ๆ เท่านั้น
+      _ = core.RDB.GeoAdd(r.Context(), "drivers:locations", &redis.GeoLocation{
+        Name:      driverIDStr,
         Latitude:  msg.Latitude,
         Longitude: msg.Longitude,
       }).Err()
-
-      if err != nil {
-        fmt.Printf("Redis GEOADD Error: %v\n", err)
-      } else {
-        fmt.Printf("[Redis GEO Saved] Drivers locations updated %s to memory done\n", driverID)
-      }
     }
   }
 }
-
-// BroadcastToDrivers ส่งข้อมูลกระจายไปหาคนขับทุกคนที่กำลังออนไลน์อยู่
-/* func (h *Hub) BroadcastToDrivers(message interface{}) {
-  h.ActiveDrivers.Range(func(key, value interface{}) bool {
-    client := value.(*DriverClient)
-
-    // ส่งข้อมูลในรูปแบบ JSON ออกไปหาแอปไรเดอร์คนนั้นๆ ทันที
-    err := client.Conn.WriteJSON(message)
-    if err != nil {
-      fmt.Printf("Send trip to riders %s fails: %v\n", client.DriverID, err)
-      client.Conn.Close()
-      h.ActiveDrivers.Delete(key)
-    }
-    return true
-  })
-} */
 
 // FindNearbyDrivers ทำหน้าที่ยิงเรดาร์สแกนหาคนขับที่อยู่รอบตัวลูกค้าในรัศมีที่กำหนด (กิโลเมตร)
 func (h *Hub) FindNearbyDrivers(ctx context.Context, lat, lng float64, radiusKm float64) ([]string, error) {
@@ -141,7 +142,7 @@ func (h *Hub) SendToSpecificDriver(driverID uuid.UUID, message interface{}) {
   }
 }
 
-// StartDispatchWorker ลูปอัจฉริยะ คอยปลุกเรดาร์สแกนกระจายงานค้างทุกๆ 10 วินาที
+// StartDispatchWorker smart loop คอยปลุกเรดาร์สแกนกระจายงานค้างทุกๆ 10 วินาที
 func (h *Hub) StartDispatchWorker(ctx context.Context) {
   ticker := time.NewTicker(10 * time.Second)
   defer ticker.Stop()
@@ -166,13 +167,23 @@ func (h *Hub) StartDispatchWorker(ctx context.Context) {
         lat := ride.PickupLatitude.InexactFloat64()
         lon := ride.PickupLongitude.InexactFloat64()
 
-        // ยิงเรดาร์สแกนหาคนขับรอบตัวลูกค้าในรัศมี 3 กิโลเมตร 
+        // สแกนหาไรเดอร์รอบตัวลูกค้าในรัศมี 3 กิโลเมตรจากแรม Redis
         nearbyDriverIDs, err := h.FindNearbyDrivers(ctx, lat, lon, 3.0)
         if err != nil || len(nearbyDriverIDs) == 0 {
-          continue // ถ้ารอบนี้ยังไม่มีใครขับรถเฉียดเข้ามาใกล้จุดรับลูกค้า ก็ข้ามไปสแกนทริปถัดไป
+          continue // ถ้ารอบนี้ยังไม่มีไรเดอร์อยู่ในรัศมีของจุดรับลูกค้า ก็ข้ามไปสแกนรอบถัดไป
         }
 
-        // ประกอบร่าง JSON ข้อมูลงานเตรียมพ่นออกท่อ
+        // [PRODUCTION FILTER] กรองข้อมูลหาเฉพาะไรเดอร์ที่มีสเตตัส "online" เท่านั้น
+        // คนที่ติดทริปส่งคนอื่นอยู่ (busy/on_trip) หรือปิดระบบไปแล้ว จะโดนคัดออกตรงนี้ทันที
+        var availableDriverIDs []string
+        err = core.DB.Model(&models.Driver{}).
+          Where("id IN ? AND status = ?", nearbyDriverIDs, "online").
+          Pluck("id", &availableDriverIDs).Error
+
+        if err != nil || len(availableDriverIDs) == 0 {
+          continue // ถ้ารอบนี้ไรเดอร์แถวนั้นติดงานกันหมด ให้รอรอบถัดไป
+        }
+
         jobOfferMessage := map[string]interface{}{
           "event":            "new_ride_requested",
           "ride_id":          ride.ID.String(),
@@ -183,11 +194,11 @@ func (h *Hub) StartDispatchWorker(ctx context.Context) {
           "total_fare":       ride.TotalFare,
         }
 
-        // ส่งซ้ำเจาะจงรายบุคคลหาคนขับกลุ่มล่าสุดที่อยู่ใกล้พิกัดลูกค้า
-        for _, dIDStr := range nearbyDriverIDs {
+        // ส่งข้อเสนอเจาะจงหาเฉพาะคนขับกลุ่มที่ว่างอยู่จริง ๆ เท่านั้น
+        for _, dIDStr := range availableDriverIDs {
           lockKey := fmt.Sprintf("%s:%s", ride.ID.String(), dIDStr)
 
-          // เช็กว่าคู่ งาน-คนขับ เจ้านี้ เพิ่งส่งไปในรอบ 30 วินาทีที่ผ่านมาหรือไม่
+          // เช็กว่า job and rider เจ้านี้ เพิ่งส่ง noti ไปในรอบ 30 วินาทีที่ผ่านมาหรือไม่
           if lastSent, exists := h.DispatchedPairs.Load(lockKey); exists {
             if time.Since(lastSent.(time.Time)) < 30*time.Second {
               continue // ถ้าเพิ่งส่งไปไม่ถึง 30 วิ ให้ข้ามไป ไม่ต้องพ่น Noti ซ้ำ!
@@ -204,4 +215,51 @@ func (h *Hub) StartDispatchWorker(ctx context.Context) {
       }
     }
   }
+}
+
+type ToggleStatusRequest struct {
+  IsOnline bool `json:"is_online"`
+}
+
+func (h *Hub) ToggleStatusEndpoint(w http.ResponseWriter, r *http.Request) {
+  ctxUserID := r.Context().Value(auth.UserIDKey)
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized,
+      "Unauthorized. Missing session identity.", "40101")
+    return
+  }
+  driverIDStr := ctxUserID.(string)
+  driverUUID, _ := uuid.Parse(driverIDStr)
+
+  var req ToggleStatusRequest
+  if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    core.WriteError(w, http.StatusBadRequest,
+      "Invalid JSON body format", "40000")
+    return
+  }
+
+  status := "offline"
+  if req.IsOnline {
+    status = "online"
+  }
+
+  // อัปเดตสเตตัสลงฐานข้อมูล Postgres
+  if err := core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).
+    Update("status", status).Error; err != nil {
+    core.WriteError(w, http.StatusInternalServerError,
+      "Failed to update driver status", "50099")
+    return
+  }
+
+  // ถ้ากดปิดระบบ (Offline) ให้สั่งลบพิกัดออกจาก Redis GEO ด้วยเพื่อไม่ให้ระบบจ่ายงานมาหา
+  if !req.IsOnline {
+    _ = core.RDB.ZRem(r.Context(), "drivers:locations", driverIDStr).Err()
+  }
+
+  core.WriteSuccess(w, http.StatusOK,
+    "Driver status updated successfully", "20000",
+    map[string]interface{}{
+      "status": status,
+    },
+  )
 }
