@@ -282,11 +282,26 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     return
   }
 
-  // Safety Check: ป้องกันเคสคนขับกดปุ่มรับงานพร้อมกัน (Race Condition)
-  // งานที่จะกดรับได้ ต้องมีสถานะเป็น "searching" และยังไม่มีคนขับผูกไว้เท่านั้น
+  // [SAFETY CHECK] ป้องกันเคสคนขับกดรับงานพร้อมกัน (Race Condition)
   if ride.Status != "searching" || ride.DriverID != nil {
     core.WriteError(w, http.StatusConflict,
       "This ride has already been taken by another driver", "40901")
+    return
+  }
+
+  // [VEHICLE TYPE CHECK] ดึงประเภทรถของไรเดอร์คนนี้มาตรวจสอบ
+  var driver models.Driver
+  if err := core.DB.First(&driver, "id = ?", driverUUID).Error; err != nil {
+    core.WriteError(w, http.StatusNotFound, "Driver profile not found", "40402")
+    return
+  }
+
+  // ตรวจสอบว่าประเภทรถของคนขับ ตรงกับที่ผู้โดยสารต้องการหรือไม่ (เช่น car == car, bike == bike)
+  if driver.VehicleType != ride.VehicleType {
+    core.WriteError(w, http.StatusBadRequest, 
+      fmt.Sprintf("Vehicle type mismatch. This ride requires a %s, but your vehicle is a %s.",
+        ride.VehicleType, driver.VehicleType), 
+      "40033")
     return
   }
 
@@ -341,9 +356,15 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
   }
 
   tx.Commit()
+  fmt.Printf("[DB Transaction Committed] Ride %s Accepted by Driver: %s\n", ride.ID, driverIDStr)
+
+  ctx := r.Context()
+
+  // job accepted สั่งเปลี่ยนสเตตัสบน Redis ไปเป็น busy
+  _ = core.RDB.HSet(ctx, "drivers:states", driverIDStr, "busy").Err()
 
   // เคลียร์ประวัติการส่งงานคู่นี้ออกจากแรม Redis GEO
-  _ = core.RDB.ZRem(r.Context(), "drivers:locations", driverIDStr).Err()
+  _ = core.RDB.ZRem(ctx, "drivers:locations", driverIDStr).Err()
 
   // เคลียร์ประวัติการจองงาน (Dispatch History) ทั้งหมดที่ผูกกับทริปนี้ออก
   h.hub.DispatchedPairs.Range(func(key, value interface{}) bool {
@@ -644,7 +665,7 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
     return
   }
 
-  // 3.3 บันทึกประวัติการเงินลงตารางบัญชีแยกประเภท (FinancialTransactions) หลังจบงาน
+  // บันทึกประวัติการเงินลงตารางบัญชีแยกประเภท (FinancialTransactions) หลังจบงาน
   txLog := models.FinancialTransaction{
     ID:          uuid.New(),
     RideID:      &ride.ID,
@@ -675,7 +696,21 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
   fmt.Printf("[DB Transaction Committed] Ride %s Completed. Wallet Updated for Driver: %v\n",
     ride.ID, ride.DriverID)
 
-  // Return Response
+  ctx := r.Context()
+  rideIDStr := ride.ID.String()
+
+  // job completed สั่งเปลี่ยนสเตตัสบน Redis ไปเป็น online
+  _ = core.RDB.HSet(ctx, "drivers:states", driverIDStr, "online").Err()
+
+  // เคลียร์ประวัติการจองงาน (Dispatch History) ทั้งหมดที่ผูกกับทริปนี้ออก
+  h.hub.DispatchedPairs.Range(func(key, value interface{}) bool {
+    keyStr := key.(string)
+    if strings.HasPrefix(keyStr, rideIDStr+":") {
+      h.hub.DispatchedPairs.Delete(key)
+    }
+    return true
+  })
+
   core.WriteSuccess(w, http.StatusOK,
     "Ride has been completed successfully", "20000",
     map[string]interface{}{
@@ -812,8 +847,15 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
 
   tx.Commit()
 
-  // Dispatch คู่ล็อกงานของทริปนี้ทันที สั่งล้างประวัติการจ่ายงาน
+  // เตรียมตัวแปร
+  ctx := r.Context()
+  driverIDStr := ride.DriverID.String()
   rideIDStr := ride.ID.String()
+
+  // job cancelled สั่งเปลี่ยนสเตตัสบน Redis ไปเป็น online
+  _ = core.RDB.HSet(ctx, "drivers:states", driverIDStr, "online").Err()
+
+  // เคลียร์ประวัติการจองงาน (Dispatch History) ทั้งหมดที่ผูกกับทริปนี้ออก
   h.hub.DispatchedPairs.Range(func(key, value interface{}) bool {
     keyStr := key.(string)
     if strings.HasPrefix(keyStr, rideIDStr+":") {
@@ -825,7 +867,7 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
   core.WriteSuccess(w, http.StatusOK,
     "Ride cancelled and payment reverted successfully", "20000",
     map[string]interface{}{
-      "ride_id":        ride.ID.String(),
+      "ride_id":        rideIDStr,
       "status":         "cancelled",
       "payment_status": targetPaymentStatus,
     },
