@@ -63,12 +63,14 @@ type Ride struct {
   PlatformShare    decimal.Decimal `gorm:"type:numeric(10,2);not null"` // เข้าแอป 14% (เช่น 4.90)
 
   // สเตตัสและข้อมูล Gateway
-  PaymentMethod    string          `gorm:"type:varchar(20);not null"` // 'promptpay', 'credit_card', 'cash'
-  PaymentStatus    string          `gorm:"type:varchar(20);default:'pending'"` // 'pending', 'authorized', 'captured', 'voided'
+  // 'promptpay', 'credit_card', 'cash'
+  PaymentMethod    string          `gorm:"type:varchar(20);not null"`
+  // 'pending', 'authorized', 'captured', 'settled', 'voided'
+  PaymentStatus    string          `gorm:"type:varchar(20);default:'pending'"`
   OmiseChargeID    *string         `gorm:"type:varchar(100)"` // ใช้คุยกับ Omise API (Hold/Capture)
 
-  // 'requested', 'searching', 'pending_payment, 'accepted'', 'completed', 'cancelled'
-  // 'arrived', 'on_trip'
+  // 'requested', 'searching', 'pending_payment', 'accepted',
+  // 'arrived', 'on_trip', 'completed', 'cancelled'
   Status           string          `gorm:"type:varchar(30);default:'requested'"`
   OriginName       string          `gorm:"type:varchar(100)"`
   DestinationName  string          `gorm:"type:varchar(100)"`

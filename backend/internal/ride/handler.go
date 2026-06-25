@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
 type RideHandler struct {
@@ -529,28 +530,49 @@ func (h *RideHandler) StartRideEndpoint(w http.ResponseWriter, r *http.Request) 
   )
 }
 
-type CompleteRideRequest struct {
+type DriverCompleteRideRequest struct {
   RideID string `json:"ride_id"`
 }
 
 func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Request) {
-  var req CompleteRideRequest
+  ctxUserID := r.Context().Value(auth.UserIDKey)
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized,
+      "Unauthorized. Missing session identity.", "40101")
+    return
+  }
+  driverIDStr := ctxUserID.(string)
+  driverUUID, _ := uuid.Parse(driverIDStr)
+
+  var req DriverCompleteRideRequest
   if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
     core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
     return
   }
 
   if req.RideID == "" {
-    core.WriteError(w, http.StatusBadRequest, "ride_id is required", "40002")
+    core.WriteError(w, http.StatusBadRequest, "ride_id is required field", "40002")
     return
   }
-
   rideUUID, _ := uuid.Parse(req.RideID)
 
-  // 1. ดึงข้อมูลทริปจาก DB มาเช็กว่าทริปนี้อยู่ในสถานะที่ควรจะปิดงานได้ไหม (เช่น ต้องเป็น accepted หรือ driving)
   var ride models.Ride
   if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
     core.WriteError(w, http.StatusNotFound, "Ride does not exist", "40401")
+    return
+  }
+
+  // [SECURITY CHECK] ตรวจสอบสิทธิ์ว่าไรเดอร์คนนี้คือเจ้าของทริปตัวจริง
+  if ride.DriverID == nil || *ride.DriverID != driverUUID {
+    core.WriteError(w, http.StatusForbidden,
+      "Access denied. You are not the assigned driver for this ride.", "40308")
+    return
+  }
+
+  // ตรวจสอบ State Machine: ทริปจะจบลงได้ ต้องมีสถานะวิ่งอยู่กลางทาง (on_trip) เท่านั้น
+  if ride.Status != "on_trip" {
+    core.WriteError(w, http.StatusConflict,
+      "Invalid ride status transition", "40902")
     return
   }
 
@@ -560,17 +582,23 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
     return
   }
 
-  // 2. สับสวิตช์การเรียกเก็บเงินจริงตามช่องทางการชำระเงิน
+  // [TRANSACTION START] เริ่มต้นจองคิวอัปเดตระบบและการเงิน
+  tx := core.DB.Begin()
+
+  // สับสวิตช์การเรียกเก็บเงินจริงตามช่องทางการชำระเงิน
   switch ride.PaymentMethod {
     case "credit_card":
       if ride.OmiseChargeID == nil || *ride.OmiseChargeID == "" {
+        tx.Rollback()
         core.WriteError(w, http.StatusBadRequest,
           "This trip does not have a valid credit card token", "40003")
         return
       }
-      // บัตรเครดิตต้องยิง Capture Charge เก็บเงินจริง
+
+      // ยิง Omise Capture Charge เพื่อเก็บเงินจริง (หากพัง ระบบใน DB จะปลอดภัยด้วยการ Rollback)
       _, err := h.omiseClient.CaptureCharge(*ride.OmiseChargeID)
       if err != nil {
+        tx.Rollback()
         core.WriteError(w, http.StatusInternalServerError,
           "Failed to capture charge via Omise: "+err.Error(), "50004")
         return
@@ -579,35 +607,38 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
         ride.TotalFare, *ride.OmiseChargeID)
 
     case "promptpay":
-      // หลังบ้านปล่อยไหลไปทำสเต็ปแจกเงินให้ไรเดอร์ใน DB ได้เลย
       fmt.Printf("[PromptPay Complete] No capture required amount %s THB from Charge ID: %s\n",
         ride.TotalFare, *ride.OmiseChargeID)
 
     default:
+      tx.Rollback()
       core.WriteError(w, http.StatusBadRequest, "Invalid payment method", "40014")
       return
   }
 
-  // 3. ใช้ GORM Transaction เพื่ออัปเดตสถานะทริป และบวกเงินเข้า Wallet ไรเดอร์พร้อมๆ กัน (ป้องกันระบบเอ๋อเงินไม่เข้า)
-  tx := core.DB.Begin()
-
-  // 3.1 อัปเดตสถานะทริปเป็น completed
-  // credit_card authorized to paid
-  // promptpay pending to paid
+  // อัปเดตข้อมูลทริปเป็นเสร็จสิ้น
+  // credit_card change authorized to paid
+  // promptpay change pending to paid
   rideUpdates := map[string]interface{}{
     "status":         "completed",
-    "payment_status": "paid",
+    "payment_status": "settled",
     "updated_at":     time.Now(),
   }
   if err := tx.Model(&ride).Updates(rideUpdates).Error; err != nil {
     tx.Rollback()
-    core.WriteError(w, http.StatusInternalServerError, "Update ride status fails", "50005")
+    core.WriteError(w, http.StatusInternalServerError,
+      "Failed to update ride status to completed", "50006")
     return
   }
 
-  // 3.2 โอนเงินส่วนแบ่ง เข้า Wallet คนขับ balance = balance + driver_share
-  if err := tx.Exec("UPDATE driver_wallets SET balance = balance + ?, updated_at = ? WHERE driver_id = ?",
-    ride.DriverShare, time.Now(), ride.DriverID).Error; err != nil {
+  // โอนเงินส่วนแบ่ง เข้า Wallet คนขับ balance = balance + driver_share
+  walletUpdates := map[string]interface{}{
+    "balance":    gorm.Expr("balance + ?", ride.DriverShare), // ป้องกัน Race Condition
+    "updated_at": time.Now(),
+  }
+  // สมมุติว่าชื่อโมเดลกระเป๋าเงินของคุณคือ models.DriverWallet ครับ
+  if err := tx.Model(&models.DriverWallet{}).Where("driver_id = ?", ride.DriverID).
+    Updates(walletUpdates).Error; err != nil {
     tx.Rollback()
     core.WriteError(w, http.StatusInternalServerError, "Driver payout failed", "50006")
     return
@@ -618,8 +649,8 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
     ID:          uuid.New(),
     RideID:      &ride.ID,
     DriverID:    ride.DriverID,
-    TxType:      "earning", // ระบุประเภทชัดเจนว่าเป็นรายได้จากการวิ่งงาน
-    Amount:      ride.DriverShare, // ยอดเงิน เช่น 81.70 บาท
+    TxType:      "earning",
+    Amount:      ride.DriverShare,
     Description: fmt.Sprintf("Earnings from ride: %s to %s", ride.OriginName, ride.DestinationName),
     CreatedAt:   time.Now(),
   }
@@ -630,18 +661,27 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
     return
   }
 
+  // [DRIVER STATE RELOAD] คลายล็อกคนขับเปลี่ยนจาก busy กลับมาเป็น online พร้อมรับงานถัดไป
+  if err := tx.Model(&models.Driver{}).Where("id = ?", driverUUID).
+    Update("status", "online").Error; err != nil {
+    tx.Rollback()
+    core.WriteError(w, http.StatusInternalServerError,
+      "Failed to release driver status back to online", "50097")
+    return
+  }
+
   // มั่นใจว่าบันทึกทุกอย่างลงฐานข้อมูลพร้อมกัน
   tx.Commit()
   fmt.Printf("[DB Transaction Committed] Ride %s Completed. Wallet Updated for Driver: %v\n",
     ride.ID, ride.DriverID)
 
-  // 4. ส่ง Response ตอบกลับ
+  // Return Response
   core.WriteSuccess(w, http.StatusOK,
-    "Ride completed and payment processed successfully", "20000",
+    "Ride has been completed successfully", "20000",
     map[string]interface{}{
-      "ride_id":      ride.ID.String(),
-      "status":       "completed",
-      "driver_share": ride.DriverShare,
+      "ride_id":   ride.ID.String(),
+      "status":    "completed",
+      "driver_id": driverIDStr,
     },
   )
 }
@@ -808,7 +848,7 @@ func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Reques
           fmt.Printf("[Webhook Failed Log] Trip Ride ID: %s status change to cancelled automatically PromptPay payment fails\n",
             ride.ID)
 
-          // แถมเทคนิค: ตรงนี้สามารถส่ง WebSocket ไปบอกแอปฝั่งลูกค้า (Customer) ได้ด้วยนะ
+          // แถมเทคนิค: ตรงนี้สามารถส่ง WebSocket ไปบอกแอปฝั่งลูกค้า (Customer)
           // ว่า "การชำระเงินไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" หน้าแอปจะได้เด้งเตือน
         }
     }
