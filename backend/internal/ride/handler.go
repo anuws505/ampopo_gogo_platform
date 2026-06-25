@@ -281,7 +281,7 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     return
   }
 
-  // Safety Check: ป้องกันเคสคนขับ 2 คนกดปุ่มรับงานพร้อมกัน (Race Condition)
+  // Safety Check: ป้องกันเคสคนขับกดปุ่มรับงานพร้อมกัน (Race Condition)
   // งานที่จะกดรับได้ ต้องมีสถานะเป็น "searching" และยังไม่มีคนขับผูกไว้เท่านั้น
   if ride.Status != "searching" || ride.DriverID != nil {
     core.WriteError(w, http.StatusConflict,
@@ -289,7 +289,7 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     return
   }
 
-  // ใช้คำสั่ง GeoPos เพื่อดึงพิกัดทศนิยมล่าสุดของไรเดอร์
+  // ดึงพิกัดปัจจุบันของไรเดอร์คนนี้จาก Redis GEO เพื่อเช็กระยะห่าง
   positions, err := core.RDB.GeoPos(r.Context(), "drivers:locations", driverIDStr).Result()
   if err != nil || len(positions) == 0 || positions[0] == nil {
     core.WriteError(w, http.StatusBadRequest,
@@ -304,7 +304,7 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
   pickupLat := ride.PickupLatitude.InexactFloat64()
   pickupLng := ride.PickupLongitude.InexactFloat64()
 
-  // ตรวจสอบระยะห่างไม่ให้เกินขอบเขตที่กำหนด
+  // ตรวจสอบระยะห่างไม่ให้เกินขอบเขตที่กำหนด (3 กิโลเมตร)
   if calculateDistance(driverLat, driverLng, pickupLat, pickupLng) > 3.0 {
     // ล้างประวัติส่งงานค้างคู่นี้ออกจากแรมทันที เพื่อไม่ให้ส่ง Noti ซ้ำ
     h.hub.DispatchedPairs.Delete(fmt.Sprintf("%s:%s", rideIDStr, driverIDStr))
@@ -314,20 +314,37 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     return
   }
 
-  // สั่งอัปเดตข้อมูลผูกตัวคนขับและเปลี่ยนสถานะทริปผ่าน GORM
-  updates := map[string]interface{}{
+  // [TRANSACTION LOCK] เริ่มทำการอัปเดตข้อมูลทริป และล็อกสเตตัสคนขับพร้อมกัน
+  tx := core.DB.Begin()
+
+  // 1. อัปเดตฝั่งข้อมูลทริป (ผูกคนขับ + สลับเป็น accepted)
+  rideUpdates := map[string]interface{}{
     "driver_id":  driverUUID,
     "status":     "accepted",
     "updated_at": time.Now(),
   }
-
-  if err := core.DB.Model(&ride).Updates(updates).Error; err != nil {
+  if err := tx.Model(&ride).Updates(rideUpdates).Error; err != nil {
+    tx.Rollback()
     core.WriteError(w, http.StatusInternalServerError,
-      "Failed to update ride status in database", "50003")
+      "Failed to update ride status", "50003")
     return
   }
 
-  // เคลียร์ประวัติการจองงาน (Dispatch History) ทั้งหมดที่ผูกกับทริปนี้ออกจากแรม
+  // 2. [DRIVER STATE] ปรับสถานะคนขับเป็น busy ทันทีเพื่อล็อกคิว ไม่ให้ Worker จ่ายงานอื่นแทรกเข้ามา
+  if err := tx.Model(&models.Driver{}).Where("id = ?", driverUUID).
+    Update("status", "busy").Error; err != nil {
+    tx.Rollback()
+    core.WriteError(w, http.StatusInternalServerError,
+      "Failed to lock driver status", "50098")
+    return
+  }
+
+  tx.Commit()
+
+  // เคลียร์ประวัติการส่งงานคู่นี้ออกจากแรม Redis GEO
+  _ = core.RDB.ZRem(r.Context(), "drivers:locations", driverIDStr).Err()
+
+  // เคลียร์ประวัติการจองงาน (Dispatch History) ทั้งหมดที่ผูกกับทริปนี้ออก
   h.hub.DispatchedPairs.Range(func(key, value interface{}) bool {
     keyStr := key.(string)
     if strings.HasPrefix(keyStr, rideIDStr+":") {
@@ -336,7 +353,7 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     return true
   })
 
-  // Return response (ใช้ driverIDStr ที่แกะได้จาก Token ส่งกลับไป)
+  // Return response 
   core.WriteSuccess(w, http.StatusOK,
     "Ride accepted successfully", "20000",
     map[string]interface{}{

@@ -86,8 +86,8 @@ curl -X POST http://localhost:8080/api/v1/rides/create \
   "distance_km": "5",
   "duration_minutes": "10",
   "surge_multiplier": "1.3",
-  "card_token": "xxxx",
-  "payment_method": "promptpay",
+  "card_token": "tokn_test_684rluob1kzj7rfcru4",
+  "payment_method": "credit_card",
   "origin_name": "เซ็นทรัลลาดพร้าว",
   "destination_name": "สยามพารากอน"
 }'
@@ -119,25 +119,25 @@ curl -X POST http://localhost:8080/api/v1/rides/accept \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80",
+  "ride_id": "db20aec5-817e-40c9-990a-20bfb3d45eab"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/arrive \
 -H "Content-Type: application/json" \
 -d '{
-  "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80"
+  "ride_id": "db20aec5-817e-40c9-990a-20bfb3d45eab"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/start \
 -H "Content-Type: application/json" \
 -d '{
-  "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80"
+  "ride_id": "db20aec5-817e-40c9-990a-20bfb3d45eab"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/complete \
 -H "Content-Type: application/json" \
 -d '{
-  "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80"
+  "ride_id": "db20aec5-817e-40c9-990a-20bfb3d45eab"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/cancel \
@@ -211,6 +211,18 @@ curl -X POST http://localhost:8080/api/v1/auth/logout \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx"
 
+
+- websocket connect
+ws://localhost:8080/api/v1/realtime/driver \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3ODQ4ODA5ODMsImlhdCI6MTc4MjI4ODk4MywicGhvbmVfbnVtYmVyIjoiMDgxMjM0NTg4OCIsInJvbGUiOiJkcml2ZXIiLCJ1c2VyX2lkIjoiMWIyOGFmNTMtNzA3Mi00OTMzLWE3ZTItZGViZDVjNzYwOGMwIn0.G6l1aVzIDYVPP5nu1Fls9YiGytklv0f5LfWhf-VM15E"
+
+curl -X POST http://localhost:8080/api/v1/realtime/driver/toggle-status \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx" \
+-d '{
+  "is_online": false
+}'
 
 
 
