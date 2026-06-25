@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,15 +69,21 @@ func (h *Hub) HandleDriverConnection(w http.ResponseWriter, r *http.Request) {
     Where("driver_id = ? AND status IN ?", driverUUID, []string{"accepted", "arrived", "on_trip"}).
     Count(&activeRideCount)
 
+  // ดึงสเปกรถของไรเดอร์มาด่วน เพื่อใช้ประกอบร่างคีย์บน Redis
+  var driverProfile models.Driver
+  _ = core.DB.Select("vehicle_type").First(&driverProfile, "id = ?", driverUUID).Error
+
   if activeRideCount == 0 {
-    // ซิงค์ทั้งคู่ให้ตรงกัน
-    _ = core.RDB.HSet(ctx, "drivers:states", driverIDStr, "online").Err()
+    // ซิงค์ทั้งคู่ให้ตรงกัน และ ประกอบร่างฝากลงแรมเป็น "online:bike" หรือ "online:car"
+    redisStatus := fmt.Sprintf("online:%s", driverProfile.VehicleType)
+  
+    _ = core.RDB.HSet(ctx, "drivers:states", driverIDStr, redisStatus).Err()
     _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).Update("status", "online").Error
-    fmt.Printf("[Sync Connect] Driver ID: %s set to online on both Redis & Postgres\n", driverIDStr)
+    fmt.Printf("[Sync Connect] Driver ID: %s set to %s\n", driverIDStr, redisStatus)
   } else {
     _ = core.RDB.HSet(ctx, "drivers:states", driverIDStr, "busy").Err()
     _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).Update("status", "busy").Error
-    fmt.Printf("[Sync Connect] Driver ID: %s locked to busy on both Redis & Postgres\n", driverIDStr)
+    fmt.Printf("[Sync Connect] Driver ID: %s locked to busy due to active ride\n", driverIDStr)
   }
 
   // เปิดสายรอฟัง เผื่อคนขับส่งข้อมูลอะไรกลับมา หรือถ้าตัดสายไปจะได้เคลียร์รายชื่อออก
@@ -84,19 +91,28 @@ func (h *Hub) HandleDriverConnection(w http.ResponseWriter, r *http.Request) {
     h.ActiveDrivers.Delete(driverUUID)
     conn.Close()
 
-    // ใช้ context.Background() เพื่อการันตีว่าคำสั่งบน Redis จะทำงานสำเร็จแม้สายจะตัดไปแล้ว
     bgCtx := context.Background()
     var liveRideCount int64
-    core.DB.Model(&models.Ride{}).
-      Where("driver_id = ? AND status IN ?", driverUUID, []string{"accepted", "arrived", "on_trip"}).
-      Count(&liveRideCount)
+
+    // [CRITICAL FIX] เปลี่ยนจาก driverUUID มาใช้ driverIDStr แทนเพื่อความแม่นยำสูงสุดใน SQL
+		err := core.DB.Model(&models.Ride{}).
+			Where("driver_id = ? AND status IN ?", driverIDStr, []string{"accepted", "arrived", "on_trip"}).
+			Count(&liveRideCount).Error
+    if err != nil {
+			fmt.Printf("[DB Defer Error] Failed to count live rides for driver %s: %v\n", driverIDStr, err)
+			// ถ้า DB พัง ชิงเคลียร์ Redis สเตตัสพื้นฐานก่อนเพื่อความปลอดภัย
+			_ = core.RDB.HDel(bgCtx, "drivers:states", driverIDStr).Err()
+			_ = core.RDB.ZRem(bgCtx, "drivers:locations", driverIDStr).Err()
+			return
+		}
 
     if liveRideCount == 0 {
       _ = core.RDB.HDel(bgCtx, "drivers:states", driverIDStr).Err()
       _ = core.RDB.ZRem(bgCtx, "drivers:locations", driverIDStr).Err()
-      fmt.Printf("[Redis WS Disconnected] Driver ID: %s cleaned up from memory\n", driverIDStr)
+      _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverIDStr).Update("status", "offline").Error
+      fmt.Printf("[Sync WS Disconnected] Driver ID: %s has logged out. Status updated to offline on both systems.\n", driverIDStr)
     } else {
-      fmt.Printf("[Redis WS Disconnected Warning] Driver ID: %s disconnected during trip. Maintained busy state.\n", driverIDStr)
+      fmt.Printf("[Sync WS Disconnected Warning] Driver ID: %s lost net during trip. Maintained busy state on DB.\n", driverIDStr)
     }
   }()
 
@@ -109,13 +125,15 @@ func (h *Hub) HandleDriverConnection(w http.ResponseWriter, r *http.Request) {
 
     var msg LocationMessage
     if err := json.Unmarshal(msgBytes, &msg); err == nil && msg.Event == "update_location" {
-      // [MEMORY SPEED] เปลี่ยนมาอ่านเช็กสเตตัสผ่าน Redis Hash ตรงๆ ไม่ยิงคิวรีลงดิสก์ Postgres แล้ว
+      // [MEMORY SPEED] อ่านสเตตัสจาก Redis
       currentStatus, err := core.RDB.HGet(ctx, "drivers:states", driverIDStr).Result()
-      if err != nil || currentStatus != "online" {
-        continue 
+      if err != nil || !strings.HasPrefix(currentStatus, "online") {
+        continue // ถ้าเป็น busy หรือ offline จะโดนเตะออกตรงนี้ตามปกติ
       }
 
-      fmt.Printf("[GPS Update] Driver %s at Lat: %f, Lng: %f\n", driverIDStr, msg.Latitude, msg.Longitude)
+      fmt.Printf("[GPS Update] Driver %s (%s) at Lat: %f, Lng: %f\n", driverIDStr, currentStatus, msg.Latitude, msg.Longitude)
+
+      // บันทึกพิกัด driver ลง redis
       _ = core.RDB.GeoAdd(ctx, "drivers:locations", &redis.GeoLocation{
         Name:      driverIDStr,
         Latitude:  msg.Latitude,
@@ -181,8 +199,14 @@ func (h *Hub) StartDispatchWorker(ctx context.Context) {
 
           var availableDriverIDs []string
           for i, statusItem := range statuses {
-            if statusItem != nil && statusItem.(string) == "online" {
-              availableDriverIDs = append(availableDriverIDs, nearbyDriverIDs[i])
+            if statusItem != nil {
+              statusStr := statusItem.(string)
+              // ประกอบร่างค่าที่คาดหวัง เช่น "online:bike" หรือ "online:car"
+              expectedValue := fmt.Sprintf("online:%s", ride.VehicleType)
+              
+              if statusStr == expectedValue {
+                availableDriverIDs = append(availableDriverIDs, nearbyDriverIDs[i])
+              }
             }
           }
 
@@ -240,12 +264,19 @@ func (h *Hub) ToggleStatusEndpoint(w http.ResponseWriter, r *http.Request) {
   }
 
   status := "offline"
+  pgStatus := "offline"
+
   if req.IsOnline {
-    status = "online"
+    var driverProfile models.Driver
+    _ = core.DB.Select("vehicle_type").First(&driverProfile, "id = ?", driverIDStr).Error
+    
+    status = fmt.Sprintf("online:%s", driverProfile.VehicleType) // กลายเป็น "online:bike"
+    pgStatus = "online"
   }
 
-  // [REDIS UPDATE] เขียนสเตตัสลงหน่วยความจำชั่วคราวความเร็วสูงทันที
+  // [REDIS UPDATE] เขียนสเตตัสลง redis
   _ = core.RDB.HSet(r.Context(), "drivers:states", driverIDStr, status).Err()
+  _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverIDStr).Update("status", pgStatus).Error
 
   if !req.IsOnline {
     _ = core.RDB.ZRem(r.Context(), "drivers:locations", driverIDStr).Err()

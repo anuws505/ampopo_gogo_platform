@@ -637,9 +637,7 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
       return
   }
 
-  // อัปเดตข้อมูลทริปเป็นเสร็จสิ้น
-  // credit_card change authorized to paid
-  // promptpay change pending to paid
+  // credit_card change authorized to paid | promptpay change pending to paid
   rideUpdates := map[string]interface{}{
     "status":         "completed",
     "payment_status": "settled",
@@ -700,7 +698,8 @@ func (h *RideHandler) CompleteRideEndpoint(w http.ResponseWriter, r *http.Reques
   rideIDStr := ride.ID.String()
 
   // job completed สั่งเปลี่ยนสเตตัสบน Redis ไปเป็น online
-  _ = core.RDB.HSet(ctx, "drivers:states", driverIDStr, "online").Err()
+  redisOnlineStatus := fmt.Sprintf("online:%s", ride.VehicleType)
+  _ = core.RDB.HSet(ctx, "drivers:states", driverIDStr, redisOnlineStatus).Err()
 
   // เคลียร์ประวัติการจองงาน (Dispatch History) ทั้งหมดที่ผูกกับทริปนี้ออก
   h.hub.DispatchedPairs.Range(func(key, value interface{}) bool {
@@ -853,7 +852,8 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
   rideIDStr := ride.ID.String()
 
   // job cancelled สั่งเปลี่ยนสเตตัสบน Redis ไปเป็น online
-  _ = core.RDB.HSet(ctx, "drivers:states", driverIDStr, "online").Err()
+  redisOnlineStatus := fmt.Sprintf("online:%s", ride.VehicleType)
+  _ = core.RDB.HSet(ctx, "drivers:states", driverIDStr, redisOnlineStatus).Err()
 
   // เคลียร์ประวัติการจองงาน (Dispatch History) ทั้งหมดที่ผูกกับทริปนี้ออก
   h.hub.DispatchedPairs.Range(func(key, value interface{}) bool {
