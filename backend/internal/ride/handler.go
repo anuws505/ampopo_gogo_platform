@@ -8,6 +8,7 @@ import (
 	"ampopo_gogo_platform/internal/realtime"
 	"ampopo_gogo_platform/pkg/omise"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -999,4 +1000,52 @@ func (h *RideHandler) GetRideHistoryEndpoint(w http.ResponseWriter, r *http.Requ
   // Response
   core.WriteSuccess(w, http.StatusOK,
     "Fetch ride history successfully", "20000", historyResponse)
+}
+
+func (h *RideHandler) GetCurrentRideEndpoint(w http.ResponseWriter, r *http.Request) {
+  // [GUARD RAIL] แกะไอดีและบทบาทจาก JWT Token
+  ctxUserID := r.Context().Value(auth.UserIDKey)
+  ctxRole := r.Context().Value(auth.UserRoleKey)
+
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized,
+      "Unauthorized. Missing session identity.", "40101")
+    return
+  }
+  userIDStr := ctxUserID.(string)
+  userUUID, _ := uuid.Parse(userIDStr)
+
+  var ride models.Ride
+  // ลิสต์กลุ่มสถานะที่ถือว่า "ทริปยังดำเนินอยู่"
+  activeStatuses := []string{"searching", "accepted", "arrived", "on_trip"}
+
+  query := core.DB.Model(&models.Ride{}).Where("status IN ?", activeStatuses)
+
+  // คัดกรองตามเงื่อนไขของแต่ละฝั่ง
+  if ctxRole == "driver" {
+    // ถ้าเป็นคนขับ ให้หาทริปค้างที่เขาถูกมอบหมายงานไว้
+    query = query.Where("driver_id = ?", userUUID)
+  } else {
+    // ถ้าเป็นผู้โดยสาร ให้หาทริปค้างที่เขาเป็นคนกดเรียกรถ
+    query = query.Where("customer_id = ?", userUUID)
+  }
+
+  // ยิงคิวรีหาทริปล่าสุดตัวเดียว (.First)
+  err := query.Preload("Customer").First(&ride).Error
+  if err != nil {
+    // เคสที่ 1: ถ้าไม่เจอทริปค้างอยู่เลย (GORM คืนค่า RecordNotFound) ถือว่าปกติมาก แปลว่าว่างงานอยู่
+    if errors.Is(err, gorm.ErrRecordNotFound) {
+      core.WriteSuccess(w, http.StatusOK, "No active ride found", "20000", nil)
+      return
+    }
+
+    // เคสที่ 2: error ระบบจริงๆ
+    core.WriteError(w, http.StatusInternalServerError,
+      "Database error checking current ride", "50013")
+    return
+  }
+
+  // เคสที่ 3: เจอทริปค้างอยู่! ยิงก้อนโปรไฟล์งานกลับไปให้หน้าบ้านกู้คืนสถานะ UI ทันที
+  core.WriteSuccess(w, http.StatusOK,
+    "Fetch current active ride successfully", "20000", ride)
 }

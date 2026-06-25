@@ -43,7 +43,7 @@ type DriverWallet struct {
 type Ride struct {
   ID               uuid.UUID       `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
   CustomerID       uuid.UUID       `gorm:"type:uuid;not null"`
-  DriverID         *uuid.UUID      `gorm:"type:uuid"` // ใช้ Pointer เผื่อกรณีเริ่มแรกยังไม่มีคนขับรับงาน (Null)
+  DriverID         *uuid.UUID      `gorm:"type:uuid"`
   VehicleType      string          `gorm:"type:varchar(20);not null"`
 
   // พิกัดปักหมุดแผนที่
@@ -53,14 +53,14 @@ type Ride struct {
   DropoffLongitude decimal.Decimal `gorm:"type:numeric(9,6);not null"`
 
   // รายละเอียดระยะทางและราคา
-  DistanceKM       decimal.Decimal `gorm:"type:numeric(5,2);not null"` // เช่น 2.00 กม.
-  DurationMinutes  decimal.Decimal `gorm:"type:numeric(5,2);not null"` // สำหรับรถยนต์
-  SurgeMultiplier  decimal.Decimal `gorm:"type:numeric(3,2);default:1.00"` // เช่น 1.30
+  DistanceKM       decimal.Decimal `gorm:"type:numeric(5,2);not null"`
+  DurationMinutes  decimal.Decimal `gorm:"type:numeric(5,2);not null"`
+  SurgeMultiplier  decimal.Decimal `gorm:"type:numeric(3,2);default:1.00"`
 
   // ข้อมูลการเงินสุทธิของทริป (จากสูตร 35 บาท ขั้นต่ำ / คอม 14%)
-  TotalFare        decimal.Decimal `gorm:"type:numeric(10,2);not null"` // ยอดเต็มจากลูกค้า (เช่น 35.00)
-  DriverShare      decimal.Decimal `gorm:"type:numeric(10,2);not null"` // โอนให้คนขับ 86% (เช่น 30.10)
-  PlatformShare    decimal.Decimal `gorm:"type:numeric(10,2);not null"` // เข้าแอป 14% (เช่น 4.90)
+  TotalFare        decimal.Decimal `gorm:"type:numeric(10,2);not null"`
+  DriverShare      decimal.Decimal `gorm:"type:numeric(10,2);not null"`
+  PlatformShare    decimal.Decimal `gorm:"type:numeric(10,2);not null"`
 
   // สเตตัสและข้อมูล Gateway
   // 'promptpay', 'credit_card', 'cash'
@@ -79,8 +79,8 @@ type Ride struct {
   UpdatedAt        time.Time       `gorm:"autoUpdateTime"`
 
   // Relationships สำหรับให้ GORM ดึงข้อมูลเชื่อมโยงง่ายๆ
-  Customer         Customer        `gorm:"foreignKey:CustomerID"`
-  Driver           *Driver         `gorm:"foreignKey:DriverID"`
+  Customer         *Customer       `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
+  Driver           *Driver         `gorm:"foreignKey:DriverID" json:"driver,omitempty"`
 }
 
 // 5. FinancialTransaction Model (ตารางบัญชีแยกประเภทควบคุมเงิน)

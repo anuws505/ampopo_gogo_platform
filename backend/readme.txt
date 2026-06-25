@@ -86,8 +86,8 @@ curl -X POST http://localhost:8080/api/v1/rides/create \
   "distance_km": "7",
   "duration_minutes": "10",
   "surge_multiplier": "1.3",
-  "card_token": "xxxxx",
-  "payment_method": "promptpay",
+  "card_token": "tokn_test_684yuh82n3q64jk6z6n",
+  "payment_method": "credit_card",
   "origin_name": "เซ็นทรัลลาดพร้าว",
   "destination_name": "สยามพารากอน"
 }'
@@ -119,35 +119,35 @@ curl -X POST http://localhost:8080/api/v1/rides/accept \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "ride_id": "b289f473-343b-4bc5-bdb5-2c0014d27bc0"
+  "ride_id": "5efb81d0-bc95-4ba0-a5e3-c7cf0825cfe5"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/arrive \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "ride_id": "b289f473-343b-4bc5-bdb5-2c0014d27bc0"
+  "ride_id": "5efb81d0-bc95-4ba0-a5e3-c7cf0825cfe5"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/start \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "ride_id": "b289f473-343b-4bc5-bdb5-2c0014d27bc0"
+  "ride_id": "5efb81d0-bc95-4ba0-a5e3-c7cf0825cfe5"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/complete \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "ride_id": "b289f473-343b-4bc5-bdb5-2c0014d27bc0"
+  "ride_id": "5efb81d0-bc95-4ba0-a5e3-c7cf0825cfe5"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/cancel \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "ride_id": "b289f473-343b-4bc5-bdb5-2c0014d27bc0"
+  "ride_id": "5efb81d0-bc95-4ba0-a5e3-c7cf0825cfe5"
 }'
 
 curl -X POST http://localhost:8080/api/v1/payments/omise/webhook \
@@ -156,7 +156,7 @@ curl -X POST http://localhost:8080/api/v1/payments/omise/webhook \
   "object": "event",
   "type": "charge.complete",
   "data": {
-    "id": "chrg_test_684tiaj6vrbgtpr8o5z",
+    "id": "chrg_test_684yumv1u98vlthw5z7",
     "status": "successful"
   }
 }'
@@ -220,6 +220,10 @@ curl -X POST http://localhost:8080/api/v1/auth/logout \
 -H "Authorization: Bearer xxxxx"
 
 curl -X POST http://localhost:8080/api/v1/rides/history \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx"
+
+curl -X POST http://localhost:8080/api/v1/rides/current \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx"
 
