@@ -691,6 +691,14 @@ type CancelRideRequest struct {
 }
 
 func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request) {
+  ctxUserID := r.Context().Value(auth.UserIDKey)
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized, "Unauthorized. Missing session identity.", "40101")
+    return
+  }
+  actorIDStr := ctxUserID.(string)
+  actorUUID, _ := uuid.Parse(actorIDStr)
+
   var req CancelRideRequest
   if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
     core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
@@ -701,84 +709,119 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
     core.WriteError(w, http.StatusBadRequest, "ride_id is required", "40002")
     return
   }
-
   rideUUID, _ := uuid.Parse(req.RideID)
 
-  // 1. ดึงข้อมูลทริปมาตรวจสอบสถานะปัจจุบัน
   var ride models.Ride
   if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
     core.WriteError(w, http.StatusNotFound, "Ride does not exist", "40401")
     return
   }
 
-  // Safety Check: ทริปต้องไม่ถูกปิดงานไปแล้ว หรือถูกยกเลิกซ้ำซ้อน
+  // [SECURITY CHECK] ตรวจสอบว่าคนที่ยิงมาคือผู้โดยสารเจ้าของทริป หรือคนขับที่ถูกจับคู่เท่านั้น
+  if ride.CustomerID != actorUUID && (ride.DriverID == nil || *ride.DriverID != actorUUID) {
+    core.WriteError(w, http.StatusForbidden,
+      "Access denied. You are not authorized to cancel this ride.", "40309")
+    return
+  }
+
+  // ตรวจสอบ State Machine: ห้ามยกเลิกงานที่ส่งเสร็จแล้ว หรือกำลังเดินทางอยู่ (on_trip)
   if ride.Status == "completed" {
     core.WriteError(w, http.StatusConflict,
-      "Cannot cancel this ride, it has already been completed and charged", "40903")
+      "Cannot cancel this ride, it has already been completed", "40903")
+    return
+  }
+  if ride.Status == "on_trip" {
+    core.WriteError(w, http.StatusConflict,
+      "Cannot cancel a ride that is already on trip", "40905")
     return
   }
   if ride.Status == "cancelled" {
-    core.WriteError(w, http.StatusConflict, "Trip has been cancelled", "40904")
+    core.WriteError(w, http.StatusConflict,
+      "Trip has already been cancelled", "40904")
     return
   }
 
+  // [TRANSACTION START] เริ่มต้นกระบวนการคว่ำทริปและการเงิน
+  tx := core.DB.Begin()
   var targetPaymentStatus = "voided"
 
-  // 2. แตกแขนงการคืนเงินตามเงื่อนไขช่องทางชำระเงิน
+  // แตกแขนงการคืนเงินตามเงื่อนไขช่องทางชำระเงิน
   switch ride.PaymentMethod {
     case "credit_card":
-      // เคสบัตรเครดิต: ยิง Reverse ปลดล็อกวงเงินเดิมของคุณ
+      // เคสบัตรเครดิต: ยิง Reverse ปลดล็อกวงเงิน
       if ride.OmiseChargeID != nil && *ride.OmiseChargeID != "" {
         _, err := h.omiseClient.ReverseCharge(*ride.OmiseChargeID)
         if err != nil {
+          tx.Rollback()
           core.WriteError(w, http.StatusInternalServerError,
             "Failed to reverse credit card charge: "+err.Error(), "50008")
           return
         }
-        fmt.Printf("[Omise Reverse Success] Voided Charge ID: %s Credit limit released immediately\n",
-          *ride.OmiseChargeID)
+        fmt.Printf("[Omise Reverse Success] Voided Charge ID: %s\n", *ride.OmiseChargeID)
       }
 
     case "promptpay":
-      // เคส PromptPay: ต้องตรวจสอบก่อนว่าลูกค้าควักเงินจ่ายเข้ามาหรือยัง
+      // เคส PromptPay: ต้องตรวจสอบก่อนว่าลูกค้าเงินจ่ายเข้ามาหรือยัง
       if ride.Status == "pending_payment" {
         // ลูกค้ายังไม่ได้โอนเงินสแกนคิวอาร์ แล้วกดยกเลิกทริปไปก่อน ไม่ต้องคืนเงินใคร เปลี่ยนสเตตัสใน DB จบงานได้เลย
         targetPaymentStatus = "expired"
         fmt.Println("[PromptPay Cancel] Ride cancelled before payment scanned")
-
       } else {
         // ลูกค้าโอนเงินสำเร็จแล้ว (สถานะกลายเป็น searching/accepted) แล้วโดนยกเลิกทริป ต้องทำการโอนเงินสดคืน (Refund)
         if ride.OmiseChargeID != nil && *ride.OmiseChargeID != "" {
           _, err := h.omiseClient.RefundCharge(*ride.OmiseChargeID, ride.TotalFare)
-
           if err != nil {
-            // core.WriteError(w, http.StatusInternalServerError, "ไม่สามารถโอนเงินคืนลูกค้าผ่านระบบ PromptPay ได้: "+err.Error(), "50011")
+            // core.WriteError(w, http.StatusInternalServerError,
+            //   "ไม่สามารถโอนเงินคืนลูกค้าผ่านระบบ PromptPay ได้: "+err.Error(), "50011")
             // return
-            fmt.Printf("[Omise Refund Bypass] Auto-refund failed: %v. Switched to manual refund queue for admin\n", err)
+            fmt.Printf("[Omise Refund Bypass] Auto-refund failed: %v. Moved to manual queue\n", err)
             targetPaymentStatus = "refund_pending"
           } else {
             targetPaymentStatus = "refunded"
-            fmt.Printf("[Omise Refund Success] Refunded %s THB to customer for Charge ID: %s\n",
-              ride.TotalFare, *ride.OmiseChargeID)
+            fmt.Printf("[Omise Refund Success] Refunded %s THB to customer\n", ride.TotalFare)
           }
         }
       }
   }
 
-  // 3. อัปเดตสถานะทริปใน Postgres DB ให้กลายเป็น "cancelled"
+  // 1. อัปเดตสถานะทริปใน Postgres DB ให้กลายเป็น "cancelled"
   updates := map[string]interface{}{
     "status":         "cancelled",
-    "payment_status": targetPaymentStatus, // จะเปลี่ยนเป็น voided, expired, หรือ refunded
+    "payment_status": targetPaymentStatus,
     "updated_at":     time.Now(),
   }
-
-  if err := core.DB.Model(&ride).Updates(updates).Error; err != nil {
+  if err := tx.Model(&ride).Updates(updates).Error; err != nil {
+    tx.Rollback()
     core.WriteError(w, http.StatusInternalServerError,
-      "Failed to update cancellation status in database", "50009")
+      "Failed to update cancellation status", "50009")
     return
   }
 
-  // 4. ส่ง Response ตอบกลับ
+  // 2. [CRITICAL FIX - DRIVER STATE] คลายล็อกคนขับเปลี่ยนจาก busy กลับมาเป็น online
+  if ride.DriverID != nil {
+    if err := tx.Model(&models.Driver{}).Where("id = ?", *ride.DriverID).
+      Update("status", "online").Error; err != nil {
+      tx.Rollback()
+      core.WriteError(w, http.StatusInternalServerError,
+        "Failed to release driver status back to online", "50097")
+      return
+    }
+    fmt.Printf("[Cancel Sync] Driver ID: %s released back to online status\n",
+    ride.DriverID.String())
+  }
+
+  tx.Commit()
+
+  // Dispatch คู่ล็อกงานของทริปนี้ทันที สั่งล้างประวัติการจ่ายงาน
+  rideIDStr := ride.ID.String()
+  h.hub.DispatchedPairs.Range(func(key, value interface{}) bool {
+    keyStr := key.(string)
+    if strings.HasPrefix(keyStr, rideIDStr+":") {
+      h.hub.DispatchedPairs.Delete(key)
+    }
+    return true
+  })
+
   core.WriteSuccess(w, http.StatusOK,
     "Ride cancelled and payment reverted successfully", "20000",
     map[string]interface{}{

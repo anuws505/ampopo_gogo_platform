@@ -72,20 +72,41 @@ func (h *Hub) HandleDriverConnection(w http.ResponseWriter, r *http.Request) {
 
   h.ActiveDrivers.Store(driverUUID, client)
 
-  // [DRIVER STATE] ทันทีที่ต่อท่อสำเร็จ สั่งตั้งค่าคนขับให้เป็นสถานะออนไลน์ในฐานข้อมูล
-  _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).Update("status", "online").Error
-  fmt.Printf("[WS Connected] Driver ID: %s status changed to online\n", driverIDStr)
+  // [DRIVER STATE] ทันทีที่ต่อท่อสำเร็จ ตรวจสอบก่อนว่าไรเดอร์คนนี้มีทริปที่ยังวิ่งไม่จบคาอยู่ไหม
+  var activeRideCount int64
+  core.DB.Model(&models.Ride{}).
+    Where("driver_id = ? AND status IN ?", driverUUID, []string{"accepted", "arrived", "on_trip"}).
+    Count(&activeRideCount)
 
-  // ลูปเปิดหูรอฟัง เผื่อคนขับส่งข้อมูลอะไรกลับมา หรือถ้าตัดสายไปจะได้เคลียร์รายชื่อออก
+  // ถ้าไม่มีงานค้างอยู่จริง ๆ ค่อยเปลี่ยนสเตตัสให้เขาเป็น online
+  if activeRideCount == 0 {
+    _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).Update("status", "online").Error
+    fmt.Printf("[WS Connected] Driver ID: %s status changed to online\n", driverIDStr)
+  } else {
+    // ถ้าเขามีงานค้างอยู่ ให้ล็อกสเตตัสเขาเป็น busy เหมือนเดิม (กู้คืน State เผื่อกรณีเน็ตหลุด)
+    _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).Update("status", "busy").Error
+    fmt.Printf("[WS Reconnected] Driver ID: %s recovered back to busy due to active ride\n", driverIDStr)
+  }
+
+  // เปิดสายรอฟัง เผื่อคนขับส่งข้อมูลอะไรกลับมา หรือถ้าตัดสายไปจะได้เคลียร์รายชื่อออก
   defer func() {
     h.ActiveDrivers.Delete(driverUUID)
     conn.Close()
-    
-    // [DRIVER STATE] สายหลุด/ปิดแอป สั่งเปลี่ยนเป็น offline และลบพิกัดออกจากเรดาร์ทันที
-    _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).Update("status", "offline").Error
-    _ = core.RDB.ZRem(context.Background(), "drivers:locations", driverIDStr).Err()
-    
-    fmt.Printf("[WS Disconnected] Driver ID: %s status changed to offline and removed from GEO\n", driverIDStr)
+
+    // Check ก่อนเซ็ต offline: ถ้าเขามีทริปค้างอยู่ ห้ามเปลี่ยนเป็น offline เด็ดขาด ให้คงสถานะ busy ไว้ เผื่อเขาต่อกลับเข้ามาใหม่
+    var activeRideCount int64
+    core.DB.Model(&models.Ride{}).
+      Where("driver_id = ? AND status IN ?", driverUUID, []string{"accepted", "arrived", "on_trip"}).
+      Count(&activeRideCount)
+
+    if activeRideCount == 0 {
+      _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).Update("status", "offline").Error
+      _ = core.RDB.ZRem(context.Background(), "drivers:locations", driverIDStr).Err()
+      fmt.Printf("[WS Disconnected] Driver ID: %s is now offline\n", driverIDStr)
+    } else {
+      // เน็ตหลุดระหว่างทาง แต่ติดงานอยู่ ไม่ต้องเปลี่ยนเป็น offline และไม่ต้องลบพิกัด เผื่อแอปหน้าบ้าน reconnect กลับมา
+      fmt.Printf("[WS Disconnected Warning] Driver ID: %s lost connection during trip. Keeping busy state.\n", driverIDStr)
+    }
   }()
 
   for {
@@ -130,7 +151,7 @@ func (h *Hub) FindNearbyDrivers(ctx context.Context, lat, lng float64, radiusKm 
     return nil, err
   }
 
-  // คืนค่ากลับไปเป็นรายชื่อ Array ของ Driver ID (String) ทั้งหมดที่อยู่ในรัศมี
+  // ส่งกลับรายชื่อ ["DriverID-1","DriverID-1"] ทั้งหมดที่อยู่ในรัศมี
   return result, nil
 }
 

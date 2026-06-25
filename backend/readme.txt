@@ -86,7 +86,7 @@ curl -X POST http://localhost:8080/api/v1/rides/create \
   "distance_km": "5",
   "duration_minutes": "10",
   "surge_multiplier": "1.3",
-  "card_token": "tokn_test_684rluob1kzj7rfcru4",
+  "card_token": "xxxxx",
   "payment_method": "credit_card",
   "origin_name": "เซ็นทรัลลาดพร้าว",
   "destination_name": "สยามพารากอน"
@@ -126,28 +126,28 @@ curl -X POST http://localhost:8080/api/v1/rides/arrive \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "ride_id": "db20aec5-817e-40c9-990a-20bfb3d45eab"
+  "ride_id": "b289f473-343b-4bc5-bdb5-2c0014d27bc0"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/start \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "ride_id": "db20aec5-817e-40c9-990a-20bfb3d45eab"
+  "ride_id": "b289f473-343b-4bc5-bdb5-2c0014d27bc0"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/complete \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "ride_id": "db20aec5-817e-40c9-990a-20bfb3d45eab"
+  "ride_id": "b289f473-343b-4bc5-bdb5-2c0014d27bc0"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/cancel \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "ride_id": "0bcffd91-0d0f-4ce3-8286-c2cbcf04d1ba"
+  "ride_id": "b289f473-343b-4bc5-bdb5-2c0014d27bc0"
 }'
 
 curl -X POST http://localhost:8080/api/v1/payments/omise/webhook \
@@ -156,7 +156,7 @@ curl -X POST http://localhost:8080/api/v1/payments/omise/webhook \
   "object": "event",
   "type": "charge.complete",
   "data": {
-    "id": "chrg_test_67zpllpjreat36emjgv",
+    "id": "chrg_test_684tiaj6vrbgtpr8o5z",
     "status": "successful"
   }
 }'
@@ -219,7 +219,7 @@ curl -X POST http://localhost:8080/api/v1/auth/logout \
 - websocket connect
 ws://localhost:8080/api/v1/realtime/driver \
 -H "Content-Type: application/json" \
--H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3ODQ4ODA5ODMsImlhdCI6MTc4MjI4ODk4MywicGhvbmVfbnVtYmVyIjoiMDgxMjM0NTg4OCIsInJvbGUiOiJkcml2ZXIiLCJ1c2VyX2lkIjoiMWIyOGFmNTMtNzA3Mi00OTMzLWE3ZTItZGViZDVjNzYwOGMwIn0.G6l1aVzIDYVPP5nu1Fls9YiGytklv0f5LfWhf-VM15E"
+-H "Authorization: Bearer xxxxx"
 
 curl -X POST http://localhost:8080/api/v1/realtime/driver/toggle-status \
 -H "Content-Type: application/json" \
