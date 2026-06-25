@@ -78,8 +78,8 @@ curl -X POST http://localhost:8080/api/v1/rides/estimate \
 
 curl -X POST http://localhost:8080/api/v1/rides/create \
 -H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx" \
 -d '{
-  "customer_id": "00000000-0000-0000-0000-000000000001",
   "vehicle_type": "car",
   "pickup_latitude": "13.816200",
   "pickup_longitude": "100.560300",
@@ -117,9 +117,9 @@ curl https://vault.omise.co/tokens \
 
 curl -X POST http://localhost:8080/api/v1/rides/accept \
 -H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx" \
 -d '{
   "ride_id": "d2602cae-9ba1-49a8-be93-ae69ff3e0e80",
-  "driver_id": "00000000-0000-0000-0000-000000000002"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/arrive \

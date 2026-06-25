@@ -431,7 +431,6 @@ func (h *AuthHandler) RegisterEndpoint(w http.ResponseWriter, r *http.Request) {
       Status:            "offline",
       CreatedAt:         time.Now(),
     }
-
     if err := tx.Create(&newDriver).Error; err != nil {
       tx.Rollback()
       core.WriteError(w, http.StatusInternalServerError,
@@ -591,6 +590,7 @@ func (h *AuthHandler) RecycleAndRegisterEndpoint(w http.ResponseWriter, r *http.
       tx.Model(&driver).Update("phone_number", recycledPhone)
     }
 
+    // สร้าง driver คนใหม่
     newDriver := models.Driver{
       ID:                uuid.New(),
       PhoneNumber:       req.PhoneNumber,
@@ -605,7 +605,7 @@ func (h *AuthHandler) RecycleAndRegisterEndpoint(w http.ResponseWriter, r *http.
     if err := tx.Create(&newDriver).Error; err != nil {
       tx.Rollback()
       core.WriteError(w, http.StatusInternalServerError,
-        "Failed to register driver", "50016")
+        "Failed to recycle and register driver profile", "50016")
       return
     }
 

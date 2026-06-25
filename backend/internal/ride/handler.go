@@ -2,6 +2,7 @@
 package ride
 
 import (
+	"ampopo_gogo_platform/internal/auth"
 	"ampopo_gogo_platform/internal/core"
 	"ampopo_gogo_platform/internal/models"
 	"ampopo_gogo_platform/internal/realtime"
@@ -95,7 +96,6 @@ func (h *RideHandler) EstimateFareEndpoint(w http.ResponseWriter, r *http.Reques
 }
 
 type CreateRideRequest struct {
-  CustomerID       string `json:"customer_id"`
   VehicleType      string `json:"vehicle_type"`
   PickupLatitude   string `json:"pickup_latitude"`
   PickupLongitude  string `json:"pickup_longitude"`
@@ -111,17 +111,24 @@ type CreateRideRequest struct {
 }
 
 func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request) {
+  // [GUARD RAIL] ดึงไอดีลูกค้าจาก Token โดยตรง ป้องกันการแก้ไขค่าจากภายนอก
+  ctxUserID := r.Context().Value(auth.UserIDKey)
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized,
+      "Unauthorized. Missing session identity.", "40101")
+    return
+  }
+  customerIDStr := ctxUserID.(string)
+
   var req CreateRideRequest
   if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
     core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
     return
   }
 
-  if req.CardToken == "" || req.CustomerID == "" || req.VehicleType == "" ||
-    req.PaymentMethod == "" {
+  if req.CardToken == "" || req.VehicleType == "" || req.PaymentMethod == "" {
     core.WriteError(w, http.StatusBadRequest,
-      "customer_id and card_token and vehicle_type and payment_method are required",
-      "40002")
+      "card_token, vehicle_type and payment_method are required fields", "40002")
     return
   }
 
@@ -188,12 +195,12 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
       return
   }
 
-  // บันทึกลงฐานข้อมูล Rides เพื่อเปิดทริปจับคู่คนขับ
-  customerUUID, _ := uuid.Parse(req.CustomerID)
+  // บันทึกลงฐานข้อมูล Rides เพื่อจับคู่คนขับ
+  customerUUID, _ := uuid.Parse(customerIDStr)
   status := "searching"
   paymentStatus := "authorized"
   if req.PaymentMethod == "promptpay" {
-    status = "pending_payment" 
+    status = "pending_payment"
     paymentStatus = "pending"
   }
 
@@ -241,23 +248,32 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
 
 type DriverAcceptRideRequest struct {
   RideID   string `json:"ride_id"`
-  DriverID string `json:"driver_id"`
 }
 
 func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request) {
+  // [GUARD RAIL] ดึงไอดีคนขับจาก Token โดยตรง ป้องกันการสวมรอยรับงานจากภายนอก
+  ctxUserID := r.Context().Value(auth.UserIDKey)
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized,
+      "Unauthorized. Missing session identity.", "40101")
+    return
+  }
+  driverIDStr := ctxUserID.(string)
+
   var req DriverAcceptRideRequest
   if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
     core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
     return
   }
 
-  if req.RideID == "" || req.DriverID == "" {
-    core.WriteError(w, http.StatusBadRequest, "ride_id and driver_id are required", "40002")
+  if req.RideID == "" {
+    core.WriteError(w, http.StatusBadRequest, "ride_id is required field", "40002")
     return
   }
 
   rideUUID, _ := uuid.Parse(req.RideID)
-  driverUUID, _ := uuid.Parse(req.DriverID)
+  driverUUID, _ := uuid.Parse(driverIDStr)
+  rideIDStr := req.RideID
 
   var ride models.Ride
   if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
@@ -273,10 +289,6 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     return
   }
 
-  // ดึงพิกัดปัจจุบันของไรเดอร์คนนี้จาก Redis GEO
-  driverIDStr := driverUUID.String()
-  rideIDStr := ride.ID.String()
-
   // ใช้คำสั่ง GeoPos เพื่อดึงพิกัดทศนิยมล่าสุดของไรเดอร์
   positions, err := core.RDB.GeoPos(r.Context(), "drivers:locations", driverIDStr).Result()
   if err != nil || len(positions) == 0 || positions[0] == nil {
@@ -286,19 +298,17 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
   }
   driverCurrentPos := positions[0]
 
-  // หากคำนวณสูตรคณิตศาสตร์พื้นฐาน (Haversine Formula)
+  // ใช้สูตรคณิตศาสตร์พื้นฐาน (Haversine Formula) คำนวณระยะห่าง
   driverLat := driverCurrentPos.Latitude
   driverLng := driverCurrentPos.Longitude
   pickupLat := ride.PickupLatitude.InexactFloat64()
   pickupLng := ride.PickupLongitude.InexactFloat64()
 
-  // ตรวจสอบว่าระยะห่างเกินขอบเขตที่กำหนด:
+  // ตรวจสอบระยะห่างไม่ให้เกินขอบเขตที่กำหนด
   if calculateDistance(driverLat, driverLng, pickupLat, pickupLng) > 3.0 {
-
     // ล้างประวัติส่งงานค้างคู่นี้ออกจากแรมทันที เพื่อไม่ให้ส่ง Noti ซ้ำ
     h.hub.DispatchedPairs.Delete(fmt.Sprintf("%s:%s", rideIDStr, driverIDStr))
 
-    // ส่ง Error 400 บอกไรเดอร์ว่าอยู่นอกระยะงาน
     core.WriteError(w, http.StatusBadRequest,
       "This ride is no longer available because you are out of range", "40022")
     return
@@ -317,7 +327,7 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     return
   }
 
-  // Removed dispatch history for ride
+  // เคลียร์ประวัติการจองงาน (Dispatch History) ทั้งหมดที่ผูกกับทริปนี้ออกจากแรม
   h.hub.DispatchedPairs.Range(func(key, value interface{}) bool {
     keyStr := key.(string)
     if strings.HasPrefix(keyStr, rideIDStr+":") {
@@ -326,13 +336,13 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     return true
   })
 
-  // Return response
+  // Return response (ใช้ driverIDStr ที่แกะได้จาก Token ส่งกลับไป)
   core.WriteSuccess(w, http.StatusOK,
     "Ride accepted successfully", "20000",
     map[string]interface{}{
       "ride_id":   ride.ID.String(),
       "status":    "accepted",
-      "driver_id": req.DriverID,
+      "driver_id": driverIDStr,
     },
   )
 }
