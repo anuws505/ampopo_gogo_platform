@@ -243,14 +243,14 @@ func (h *AuthHandler) ConfirmOwnerEndpoint(w http.ResponseWriter, r *http.Reques
   savedRole, err := core.RDB.Get(ctx, verifyKey).Result()
   if err != nil {
     // หาไม่เจอ แปลว่าแอบยิงตรง หรือทิ้งหน้าจอป๊อปอัปถามชื่อไว้นานเกิน 10 นาทีจนสิทธิ์หมดอายุ
-    core.WriteError(w, http.StatusForbidden, 
+    core.WriteError(w, http.StatusForbidden,
       "Session has expired or is invalid. Complete OTP step first", "40301")
     return
   }
 
   // เช็กความปลอดภัยแถมให้อีกชั้น: บทบาท (Role) ต้องตรงกับตอนที่ Verify OTP มาตั้งแต่แรกด้วย
   if savedRole != req.Role {
-    core.WriteError(w, http.StatusForbidden, 
+    core.WriteError(w, http.StatusForbidden,
       "Token role mismatch tampering detected", "40303")
     return
   }
@@ -382,7 +382,7 @@ func (h *AuthHandler) RegisterEndpoint(w http.ResponseWriter, r *http.Request) {
 
     // return เมื่อพบเบอร์ลงทะเบียนซ้ำ
     if err == nil {
-      core.WriteError(w, http.StatusConflict, 
+      core.WriteError(w, http.StatusConflict,
         "This phone number is already registered. Please verify ownership first.", "40901")
       return
     }
@@ -411,7 +411,7 @@ func (h *AuthHandler) RegisterEndpoint(w http.ResponseWriter, r *http.Request) {
 
     // return เมื่อพบเบอร์ลงทะเบียนซ้ำ
     if err == nil {
-      core.WriteError(w, http.StatusConflict, 
+      core.WriteError(w, http.StatusConflict,
         "This phone number is already registered. Please verify ownership first.", "40901")
       return
     }
@@ -646,21 +646,95 @@ func (h *AuthHandler) RecycleAndRegisterEndpoint(w http.ResponseWriter, r *http.
   )
 }
 
+// โครงสร้างก้อน JSON ที่จะตอบกลับไปหาแอปหน้าบ้าน
+type UserProfileResponse struct {
+  ID           string    `json:"id"`
+  PhoneNumber  string    `json:"phone_number"`
+  FirstName    string    `json:"first_name"`
+  LastName     string    `json:"last_name"`
+  Role         string    `json:"role"`
+  AvatarURL    string    `json:"avatar_url,omitempty"`
+  VehicleType  string    `json:"vehicle_type,omitempty"`
+  VehiclePlate string    `json:"vehicle_plate,omitempty"`
+  CreatedAt    time.Time `json:"created_at"`
+}
+
+func (h *AuthHandler) GetProfileEndpoint(w http.ResponseWriter, r *http.Request) {
+  // [GUARD RAIL] ดึง ID และ Role จาก Context ที่ด่านดัก Token แกะไว้ให้
+  ctxUserID := r.Context().Value(UserIDKey)
+  ctxRole := r.Context().Value(UserRoleKey)
+
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized,
+      "Unauthorized. Missing session identity.", "40101")
+    return
+  }
+  userIDStr := ctxUserID.(string)
+  userUUID, _ := uuid.Parse(userIDStr)
+
+  // ตัวแปรสำหรับจัดรูปก้อนข้อมูลตอบกลับ
+  var profileResponse UserProfileResponse
+
+  // แยกสาขาตรวจสอบตามสิทธิ์ของผู้ใช้งาน
+  if ctxRole == "driver" {
+    var driver models.Driver
+    if err := core.DB.First(&driver, "id = ?", userUUID).Error; err != nil {
+      core.WriteError(w, http.StatusNotFound, "Driver profile not found", "40402")
+      return
+    }
+
+    // ประกอบก้อนข้อมูลฝั่งคนขับ
+    profileResponse = UserProfileResponse{
+      ID:           driver.ID.String(),
+      PhoneNumber:  driver.PhoneNumber,
+      FirstName:    driver.FirstName,
+      LastName:     driver.LastName,
+      Role:         "driver",
+      AvatarURL:    "",
+      VehicleType:  driver.VehicleType,
+      VehiclePlate: driver.VehiclePlate,
+      CreatedAt:    driver.CreatedAt,
+    }
+  } else {
+    // เคสปกติ: เป็นผู้โดยสาร (Customer)
+    var customer models.Customer
+    if err := core.DB.First(&customer, "id = ?", userUUID).Error; err != nil {
+      core.WriteError(w, http.StatusNotFound, "Customer profile not found", "40403")
+      return
+    }
+
+    // ประกอบก้อนข้อมูลฝั่งผู้โดยสาร
+    profileResponse = UserProfileResponse{
+      ID:          customer.ID.String(),
+      PhoneNumber: customer.PhoneNumber,
+      FirstName:   customer.FirstName,
+      LastName:    customer.LastName,
+      Role:        "customer",
+      AvatarURL:   "",
+      CreatedAt:   customer.CreatedAt,
+    }
+  }
+
+  // ยิงข้อมูลโปรไฟล์กลับไปแบบคลีน ๆ ไวสมใจอยาก
+  core.WriteSuccess(w, http.StatusOK,
+    "Fetch profile successfully", "20000", profileResponse)
+}
+
 func (h *AuthHandler) LogoutEndpoint(w http.ResponseWriter, r *http.Request) {
   // ตรวจเช็กค่าตัวแปร nil
   ctxUserID := r.Context().Value(UserIDKey)
   if ctxUserID == nil {
-    core.WriteError(w, http.StatusUnauthorized, 
+    core.WriteError(w, http.StatusUnauthorized,
       "Unauthorized access. Token context not found.", "40101")
     return
   }
 
   // ดึงไอดีที่แกะได้มาจากด่าน Middleware
   userID := r.Context().Value(UserIDKey).(string)
-  
+
   // ลบ redis login session ออก
   _ = core.RDB.Del(r.Context(), SESSION_PREFIX + userID).Err()
-  
+
   core.WriteSuccess(w, http.StatusOK,
     "Logged out successfully", "20000", nil)
 }

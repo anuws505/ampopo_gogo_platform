@@ -211,9 +211,14 @@ curl -X POST http://localhost:8080/api/v1/auth/recycle-register \
   "vehicle_plate": "2AB5678"
 }'
 
+curl -X POST http://localhost:8080/api/v1/auth/me \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx"
+
 curl -X POST http://localhost:8080/api/v1/auth/logout \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx"
+
 
 
 - websocket connect

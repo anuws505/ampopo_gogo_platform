@@ -60,6 +60,7 @@ func main() {
   protected := r.PathPrefix("/api/v1").Subrouter()
   protected.Use(auth.AuthMiddleware)
 
+  protected.HandleFunc("/auth/me", authHandler.GetProfileEndpoint).Methods("POST")
   protected.HandleFunc("/auth/logout", authHandler.LogoutEndpoint).Methods("POST")
   protected.HandleFunc("/rides/create", rideHandler.CreateRideEndpoint).Methods("POST")
   protected.HandleFunc("/rides/accept", rideHandler.AcceptRideEndpoint).Methods("POST")
