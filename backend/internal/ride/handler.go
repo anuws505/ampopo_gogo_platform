@@ -186,7 +186,7 @@ func (h *RideHandler) CreateRideEndpoint(w http.ResponseWriter, r *http.Request)
         return
       }
       omiseChargeIDPtr = &charge.ID
-      
+
       if charge.Source != nil && charge.Source.References != nil {
         qrCodeURL = charge.Source.References.Barcode
       }
@@ -941,4 +941,62 @@ func (h *RideHandler) OmiseWebhookEndpoint(w http.ResponseWriter, r *http.Reques
 
   // ตอบกลับสถานะ 200 OK เพื่อบอกว่าได้รับสัญญาณเรียบร้อยแล้ว
   w.WriteHeader(http.StatusOK)
+}
+
+// โครงสร้างสำหรับพ่นประวัติแต่ละทริปกลับไปให้หน้าบ้านวาดการ์ด (Card UI)
+type RideHistoryItem struct {
+  ID              string          `json:"ride_id"`
+  OriginName      string          `json:"origin_name"`
+  DestinationName string          `json:"destination_name"`
+  TotalFare       decimal.Decimal `json:"total_fare"`
+  Status          string          `json:"status"`
+  CreatedAt       time.Time       `json:"created_at"`
+}
+
+func (h *RideHandler) GetRideHistoryEndpoint(w http.ResponseWriter, r *http.Request) {
+  // [GUARD RAIL] แกะตัวตนและบทบาทจากตั๋วเดินทาง JWT
+  ctxUserID := r.Context().Value(auth.UserIDKey)
+  ctxRole := r.Context().Value(auth.UserRoleKey)
+
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized, "Unauthorized. Missing session identity.", "40101")
+    return
+  }
+  userIDStr := ctxUserID.(string)
+  userUUID, _ := uuid.Parse(userIDStr)
+
+  var rides []models.Ride
+  query := core.DB.Model(&models.Ride{})
+
+  // กรองตารางตามบทบาทของผู้ใช้งาน
+  if ctxRole == "driver" {
+    // ถ้าเป็นคนขับ ให้ดึงทริปทั้งหมดที่เขาเป็นคนขับ และเรียงจากทริปล่าสุด (Order By CreatedAt DESC)
+    query = query.Where("driver_id = ?", userUUID).Order("created_at DESC")
+  } else {
+    // ถ้าเป็นผู้โดยสาร ให้ดึงทริปทั้งหมดที่เขาเป็นคนเรียก
+    query = query.Where("customer_id = ?", userUUID).Order("created_at DESC")
+  }
+
+  // ยิงคิวรีดึงข้อมูลออกมาเป็นก้อนลิสต์ (Slice)
+  if err := query.Find(&rides).Error; err != nil {
+    core.WriteError(w, http.StatusInternalServerError, "Failed to fetch ride history", "50012")
+    return
+  }
+
+  // แปลงข้อมูลจาก DB Model ให้กลายเป็นก้อน Response JSON
+  historyResponse := make([]RideHistoryItem, 0) // ป้องกันเคสคืนค่าเป็น null ให้หน้าบ้าน ถ้ายังไม่มีประวัติเลยจะส่งเป็น []
+  for _, ride := range rides {
+    historyResponse = append(historyResponse, RideHistoryItem{
+      ID:              ride.ID.String(),
+      OriginName:      ride.OriginName,
+      DestinationName: ride.DestinationName,
+      TotalFare:       ride.TotalFare,
+      Status:          ride.Status,
+      CreatedAt:       ride.CreatedAt,
+    })
+  }
+
+  // Response
+  core.WriteSuccess(w, http.StatusOK,
+    "Fetch ride history successfully", "20000", historyResponse)
 }

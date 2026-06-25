@@ -219,6 +219,9 @@ curl -X POST http://localhost:8080/api/v1/auth/logout \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx"
 
+curl -X POST http://localhost:8080/api/v1/rides/history \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx"
 
 
 - websocket connect
