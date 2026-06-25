@@ -381,6 +381,154 @@ func calculateDistance(lat1, lon1, lat2, lon2 float64) float64 {
   return EarthRadiusKm * c
 }
 
+
+type DriverArriveRideRequest struct {
+  RideID string `json:"ride_id"`
+}
+
+func (h *RideHandler) ArriveRideEndpoint(w http.ResponseWriter, r *http.Request) {
+  ctxUserID := r.Context().Value(auth.UserIDKey)
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized, "Unauthorized. Missing session identity.", "40101")
+    return
+  }
+  driverIDStr := ctxUserID.(string)
+  driverUUID, _ := uuid.Parse(driverIDStr)
+
+  var req DriverArriveRideRequest
+  if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
+    return
+  }
+
+  if req.RideID == "" {
+    core.WriteError(w, http.StatusBadRequest, "ride_id is required field", "40002")
+    return
+  }
+  rideUUID, _ := uuid.Parse(req.RideID)
+
+  // ดึงข้อมูลทริปมาตรวจสอบสเตตัสปัจจุบัน
+  var ride models.Ride
+  if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
+    core.WriteError(w, http.StatusNotFound, "Ride does not exist", "40401")
+    return
+  }
+
+  // [SECURITY CHECK] ตรวจสอบว่าไรเดอร์คนนี้ใช่คนที่กดรับงานทริปนี้ตัวจริงไหม
+  if ride.DriverID == nil || *ride.DriverID != driverUUID {
+    core.WriteError(w, http.StatusForbidden,
+      "Access denied. You are not the assigned driver for this ride.", "40308")
+    return
+  }
+
+  // ตรวจสอบ State Machine: ทริปจะเปลี่ยนเป็น arrived ได้ ต้องมีสถานะเป็น accepted มาก่อนเท่านั้น
+  if ride.Status != "accepted" {
+    core.WriteError(w, http.StatusConflict,
+      "Invalid ride status transition", "40902")
+    return
+  }
+
+  // อัปเดตสถานะทริปเป็น arrived
+  updates := map[string]interface{}{
+    "status":     "arrived",
+    "updated_at": time.Now(),
+  }
+
+  if err := core.DB.Model(&ride).Updates(updates).Error; err != nil {
+    core.WriteError(w, http.StatusInternalServerError,
+      "Failed to update ride status to arrived", "50004")
+    return
+  }
+
+  // ส่งสัญญาณ Real-time ผ่าน WebSocket ดีดไปบอกฝั่งลูกค้า (Customer WebSocket Hub)
+  // customerNotification := map[string]interface{}{
+  //   "event":   "driver_arrived",
+  //   "ride_id": rideIDStr,
+  //   "message": "Your driver has arrived at the pickup location",
+  // }
+  // เรียกใช้ฟังก์ชันบรอดแคสต์หรือส่งเจาะจงหาลูกค้า (สมมติฝั่ง hub มีการเกาะสายไอดีลูกค้าไว้)
+  // h.hub.SendToSpecificCustomer(ride.CustomerID, customerNotification)
+  fmt.Printf("[Realtime Alert] Broadcaster queued: Driver is arrived for Customer %s\n", ride.CustomerID.String())
+
+  core.WriteSuccess(w, http.StatusOK,
+    "Driver has arrived at the pickup location", "20000",
+    map[string]interface{}{
+      "ride_id":   ride.ID.String(),
+      "status":    "arrived",
+      "driver_id": driverIDStr,
+    },
+  )
+}
+
+type DriverStartRideRequest struct {
+  RideID string `json:"ride_id"`
+}
+
+func (h *RideHandler) StartRideEndpoint(w http.ResponseWriter, r *http.Request) {
+  ctxUserID := r.Context().Value(auth.UserIDKey)
+  if ctxUserID == nil {
+    core.WriteError(w, http.StatusUnauthorized,
+      "Unauthorized. Missing session identity.", "40101")
+    return
+  }
+  driverIDStr := ctxUserID.(string)
+  driverUUID, _ := uuid.Parse(driverIDStr)
+
+  var req DriverStartRideRequest
+  if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
+    return
+  }
+
+  if req.RideID == "" {
+    core.WriteError(w, http.StatusBadRequest, "ride_id is required field", "40002")
+    return
+  }
+  rideUUID, _ := uuid.Parse(req.RideID)
+
+  // ดึงข้อมูลทริปปัจจุบัน
+  var ride models.Ride
+  if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
+    core.WriteError(w, http.StatusNotFound, "Ride does not exist", "40401")
+    return
+  }
+
+  // [SECURITY CHECK] พิสูจน์ทราบตัวตนคนขับ ว่าตรงกับคนที่ระบบล็อกสิทธิ์ไว้ให้หรือไม่
+  if ride.DriverID == nil || *ride.DriverID != driverUUID {
+    core.WriteError(w, http.StatusForbidden,
+      "Access denied. You are not the assigned driver for this ride.", "40308")
+    return
+  }
+
+  // ตรวจสอบ State Machine: ทริปจะเปลี่ยนเป็นกำลังเดินทาง (on_trip) ได้ ต้องจอดรอสเตตัส arrived มาก่อน
+  if ride.Status != "arrived" {
+    core.WriteError(w, http.StatusConflict,
+      "Invalid ride status transition", "40902")
+    return
+  }
+
+  // อัปเดตสถานะทริปเปลี่ยนเป็น on_trip เพื่อส่งสัญญาณว่ารถกำลังเคลื่อนตัว
+  updates := map[string]interface{}{
+    "status":     "on_trip",
+    "updated_at": time.Now(),
+  }
+
+  if err := core.DB.Model(&ride).Updates(updates).Error; err != nil {
+    core.WriteError(w, http.StatusInternalServerError,
+      "Failed to update ride status to on_trip", "50005")
+    return
+  }
+
+  core.WriteSuccess(w, http.StatusOK,
+    "Ride has been started successfully", "20000",
+    map[string]interface{}{
+      "ride_id":   ride.ID.String(),
+      "status":    "on_trip",
+      "driver_id": driverIDStr,
+    },
+  )
+}
+
 type CompleteRideRequest struct {
   RideID string `json:"ride_id"`
 }
@@ -597,125 +745,6 @@ func (h *RideHandler) CancelRideEndpoint(w http.ResponseWriter, r *http.Request)
       "ride_id":        ride.ID.String(),
       "status":         "cancelled",
       "payment_status": targetPaymentStatus,
-    },
-  )
-}
-
-type ArriveRideRequest struct {
-  RideID string `json:"ride_id"`
-}
-
-func (h *RideHandler) ArriveRideEndpoint(w http.ResponseWriter, r *http.Request) {
-  var req ArriveRideRequest
-  if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-    core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
-    return
-  }
-
-  if req.RideID == "" {
-    core.WriteError(w, http.StatusBadRequest, "ride_id is required", "40002")
-    return
-  }
-
-  rideUUID, _ := uuid.Parse(req.RideID)
-  rideIDStr := rideUUID.String()
-
-  // ดึงข้อมูลทริปมาตรวจสอบสเตตัสปัจจุบัน
-  var ride models.Ride
-  if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
-    core.WriteError(w, http.StatusNotFound, "Ride does not exist", "40401")
-    return
-  }
-
-  // Safety Check: ทริปจะกดมาถึงจุดรับได้ ต้องถูกคนขับรับงานไปแล้ว (accepted) เท่านั้น
-  if ride.Status != "accepted" {
-    core.WriteError(w, http.StatusConflict,
-      "Invalid ride status for arrival configuration", "40905")
-    return
-  }
-
-  // อัปเดตสถานะทริปใน Postgres DB ให้กลายเป็น "arrived"
-  updates := map[string]interface{}{
-    "status":     "arrived",
-    "updated_at": time.Now(),
-  }
-
-  if err := core.DB.Model(&ride).Updates(updates).Error; err != nil {
-    core.WriteError(w, http.StatusInternalServerError,
-      "Failed to update arrival status in database", "50012")
-    return
-  }
-
-  // ส่งสัญญาณ Real-time ผ่าน WebSocket ดีดไปบอกฝั่งลูกค้า (Customer WebSocket Hub)
-  // customerNotification := map[string]interface{}{
-  //   "event":   "driver_arrived",
-  //   "ride_id": rideIDStr,
-  //   "message": "Your driver has arrived at the pickup location",
-  // }
-  // เรียกใช้ฟังก์ชันบรอดแคสต์หรือส่งเจาะจงหาลูกค้า (สมมติฝั่ง hub มีการเกาะสายไอดีลูกค้าไว้)
-  // h.hub.SendToSpecificCustomer(ride.CustomerID, customerNotification)
-  fmt.Printf("[Realtime Alert] Broadcaster queued: Driver is arrived for Customer %s\n", ride.CustomerID.String())
-
-  // ส่ง Response สำเร็จกลับไปหาไรเดอร์
-  core.WriteSuccess(w, http.StatusOK,
-    "Arrival status updated successfully", "20000",
-    map[string]interface{}{
-      "ride_id": rideIDStr,
-      "status":  "arrived",
-    },
-  )
-}
-
-type StartRideRequest struct {
-  RideID string `json:"ride_id"`
-}
-
-func (h *RideHandler) StartRideEndpoint(w http.ResponseWriter, r *http.Request) {
-  var req StartRideRequest
-  if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-    core.WriteError(w, http.StatusBadRequest, "Invalid JSON body format", "40000")
-    return
-  }
-
-  if req.RideID == "" {
-    core.WriteError(w, http.StatusBadRequest, "ride_id is required", "40002")
-    return
-  }
-
-  rideUUID, _ := uuid.Parse(req.RideID)
-  rideIDStr := rideUUID.String()
-
-  // 1. ดึงข้อมูลทริปมาตรวจสอบสเตตัสปัจจุบัน
-  var ride models.Ride
-  if err := core.DB.First(&ride, "id = ?", rideUUID).Error; err != nil {
-    core.WriteError(w, http.StatusNotFound, "Ride does not exist", "40401")
-    return
-  }
-
-  // Safety Check: ทริปจะเริ่มออกเดินทางได้ ต้องผ่านสเตตัส arrived มาก่อนเท่านั้น
-  if ride.Status != "arrived" {
-    core.WriteError(w, http.StatusConflict, "Invalid ride status to start the trip.", "40906")
-    return
-  }
-
-  // 2. อัปเดตสถานะทริปใน Postgres DB ให้กลายเป็น "driving"
-  updates := map[string]interface{}{
-    "status":     "driving",
-    "updated_at": time.Now(),
-  }
-
-  if err := core.DB.Model(&ride).Updates(updates).Error; err != nil {
-    core.WriteError(w, http.StatusInternalServerError,
-      "Failed to update trip status to driving.", "50013")
-    return
-  }
-
-  // 3. ส่ง Response สำเร็จกลับไปหาไรเดอร์
-  core.WriteSuccess(w, http.StatusOK,
-    "Trip started successfully. Driving to destination.", "20000",
-    map[string]interface{}{
-      "ride_id": rideIDStr,
-      "status":  "driving",
     },
   )
 }

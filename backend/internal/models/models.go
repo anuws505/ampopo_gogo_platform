@@ -68,7 +68,7 @@ type Ride struct {
   OmiseChargeID    *string         `gorm:"type:varchar(100)"` // ใช้คุยกับ Omise API (Hold/Capture)
 
   // 'requested', 'searching', 'pending_payment, 'accepted'', 'completed', 'cancelled'
-  // 'arrived', 'driving'
+  // 'arrived', 'on_trip'
   Status           string          `gorm:"type:varchar(30);default:'requested'"`
   OriginName       string          `gorm:"type:varchar(100)"`
   DestinationName  string          `gorm:"type:varchar(100)"`

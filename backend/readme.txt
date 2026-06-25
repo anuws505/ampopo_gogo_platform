@@ -124,12 +124,14 @@ curl -X POST http://localhost:8080/api/v1/rides/accept \
 
 curl -X POST http://localhost:8080/api/v1/rides/arrive \
 -H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx" \
 -d '{
   "ride_id": "db20aec5-817e-40c9-990a-20bfb3d45eab"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/start \
 -H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx" \
 -d '{
   "ride_id": "db20aec5-817e-40c9-990a-20bfb3d45eab"
 }'
