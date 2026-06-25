@@ -39,7 +39,7 @@ func (s *WalletService) GetTransactionHistory(driverID uuid.UUID,
     Order("created_at desc").
     Limit(limit).
     Find(&txs).Error
-    
+
   if err != nil {
     return nil, err
   }

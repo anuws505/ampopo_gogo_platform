@@ -23,7 +23,7 @@ func NewWalletHandler(ws *WalletService) *WalletHandler {
 func (h *WalletHandler) GetWalletSummaryEndpoint(w http.ResponseWriter, r *http.Request) {
   ctxUserID := r.Context().Value(auth.UserIDKey)
   if ctxUserID == nil {
-    core.WriteError(w, http.StatusUnauthorized, 
+    core.WriteError(w, http.StatusUnauthorized,
       "Unauthorized access. Missing session identity", "40101")
     return
   }

@@ -37,12 +37,12 @@ func (o *OmiseClient) CreateHoldCharge(token string,
   amountTHB decimal.Decimal) (*omise.Charge, error) {
   // แปลงเงินบาทให้เป็นหน่วย "สตางค์" เป็นเลขจำนวนเต็ม int64
   amountSatang := amountTHB.Mul(decimal.NewFromInt(100)).IntPart()
-  
+
   chargeOp := &operations.CreateCharge{
     Amount:      amountSatang,
     Currency:    "thb",
     Card:        token,
-    DontCapture: true, 
+    DontCapture: true,
   }
 
   result := &omise.Charge{}

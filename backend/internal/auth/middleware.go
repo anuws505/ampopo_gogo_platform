@@ -74,7 +74,7 @@ func AuthMiddleware(next http.Handler) http.Handler {
         "Logged in from another device. Terminated.", "40107")
       return
     }
-  
+
     // หากผ่านด่านหมด ส่งข้อมูลลง Context ไหลเข้าเอนพอยต์ตัวจริงตามปกติ
     ctx = context.WithValue(r.Context(), UserIDKey, userIDStr)
     ctx = context.WithValue(ctx, UserRoleKey, claims["role"])

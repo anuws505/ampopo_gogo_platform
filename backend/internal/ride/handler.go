@@ -298,9 +298,9 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
 
   // ตรวจสอบว่าประเภทรถของคนขับ ตรงกับที่ผู้โดยสารต้องการหรือไม่ (เช่น car == car, bike == bike)
   if driver.VehicleType != ride.VehicleType {
-    core.WriteError(w, http.StatusBadRequest, 
+    core.WriteError(w, http.StatusBadRequest,
       fmt.Sprintf("Vehicle type mismatch. This ride requires a %s, but your vehicle is a %s.",
-        ride.VehicleType, driver.VehicleType), 
+        ride.VehicleType, driver.VehicleType),
       "40033")
     return
   }
@@ -375,7 +375,7 @@ func (h *RideHandler) AcceptRideEndpoint(w http.ResponseWriter, r *http.Request)
     return true
   })
 
-  // Return response 
+  // Return response
   core.WriteSuccess(w, http.StatusOK,
     "Ride accepted successfully", "20000",
     map[string]interface{}{

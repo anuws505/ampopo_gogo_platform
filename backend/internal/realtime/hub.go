@@ -76,7 +76,7 @@ func (h *Hub) HandleDriverConnection(w http.ResponseWriter, r *http.Request) {
   if activeRideCount == 0 {
     // ซิงค์ทั้งคู่ให้ตรงกัน และ ประกอบร่างฝากลงแรมเป็น "online:bike" หรือ "online:car"
     redisStatus := fmt.Sprintf("online:%s", driverProfile.VehicleType)
-  
+
     _ = core.RDB.HSet(ctx, "drivers:states", driverIDStr, redisStatus).Err()
     _ = core.DB.Model(&models.Driver{}).Where("id = ?", driverUUID).Update("status", "online").Error
     fmt.Printf("[Sync Connect] Driver ID: %s set to %s\n", driverIDStr, redisStatus)
@@ -179,7 +179,7 @@ func (h *Hub) StartDispatchWorker(ctx context.Context) {
         var pendingRides []models.Ride
         err := core.DB.Where("status = ?", "searching").Find(&pendingRides).Error
         if err != nil || len(pendingRides) == 0 {
-          continue 
+          continue
         }
 
         for _, ride := range pendingRides {
@@ -188,7 +188,7 @@ func (h *Hub) StartDispatchWorker(ctx context.Context) {
 
           nearbyDriverIDs, err := h.FindNearbyDrivers(ctx, lat, lon, 3.0)
           if err != nil || len(nearbyDriverIDs) == 0 {
-            continue 
+            continue
           }
 
           // [REDIS CACHE FILTER] ดึงสถานะของกลุ่มคนขับรอบพิกัดจาก Redis Hash มาตรวจพร้อมกันในคำสั่งเดียว
@@ -203,7 +203,7 @@ func (h *Hub) StartDispatchWorker(ctx context.Context) {
               statusStr := statusItem.(string)
               // ประกอบร่างค่าที่คาดหวัง เช่น "online:bike" หรือ "online:car"
               expectedValue := fmt.Sprintf("online:%s", ride.VehicleType)
-              
+
               if statusStr == expectedValue {
                 availableDriverIDs = append(availableDriverIDs, nearbyDriverIDs[i])
               }
@@ -211,7 +211,7 @@ func (h *Hub) StartDispatchWorker(ctx context.Context) {
           }
 
           if len(availableDriverIDs) == 0 {
-            continue 
+            continue
           }
 
           jobOfferMessage := map[string]interface{}{
@@ -229,7 +229,7 @@ func (h *Hub) StartDispatchWorker(ctx context.Context) {
 
             if lastSent, exists := h.DispatchedPairs.Load(lockKey); exists {
               if time.Since(lastSent.(time.Time)) < 30*time.Second {
-                continue 
+                continue
               }
             }
 
@@ -269,7 +269,7 @@ func (h *Hub) ToggleStatusEndpoint(w http.ResponseWriter, r *http.Request) {
   if req.IsOnline {
     var driverProfile models.Driver
     _ = core.DB.Select("vehicle_type").First(&driverProfile, "id = ?", driverIDStr).Error
-    
+
     status = fmt.Sprintf("online:%s", driverProfile.VehicleType) // กลายเป็น "online:bike"
     pgStatus = "online"
   }
