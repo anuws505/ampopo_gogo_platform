@@ -80,14 +80,14 @@ curl -X POST http://localhost:8080/api/v1/rides/create \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "vehicle_type": "car",
+  "vehicle_type": "bike",
   "pickup_latitude": "13.816200",
   "pickup_longitude": "100.560300",
-  "distance_km": "5",
+  "distance_km": "7",
   "duration_minutes": "10",
   "surge_multiplier": "1.3",
   "card_token": "xxxxx",
-  "payment_method": "credit_card",
+  "payment_method": "promptpay",
   "origin_name": "เซ็นทรัลลาดพร้าว",
   "destination_name": "สยามพารากอน"
 }'
@@ -119,7 +119,7 @@ curl -X POST http://localhost:8080/api/v1/rides/accept \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx" \
 -d '{
-  "ride_id": "db20aec5-817e-40c9-990a-20bfb3d45eab"
+  "ride_id": "b289f473-343b-4bc5-bdb5-2c0014d27bc0"
 }'
 
 curl -X POST http://localhost:8080/api/v1/rides/arrive \
@@ -231,6 +231,9 @@ curl -X POST http://localhost:8080/api/v1/realtime/driver/toggle-status \
 
 
 
+rides/estimate
+payments/omise/webhook
+
 auth
 - request-otp
 - verify-otp
@@ -246,3 +249,7 @@ ride
 - start
 - complete
 - cancel
+
+wallets/driver/summary
+realtime/driver
+realtime/driver/toggle-status
