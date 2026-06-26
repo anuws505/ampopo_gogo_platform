@@ -87,7 +87,7 @@ curl -X POST http://localhost:8080/api/v1/rides/create \
   "duration_minutes": "10",
   "surge_multiplier": "1.3",
   "card_token": "tokn_test_684yuh82n3q64jk6z6n",
-  "payment_method": "credit_card",
+  "payment_method": "promptpay",
   "origin_name": "เซ็นทรัลลาดพร้าว",
   "destination_name": "สยามพารากอน"
 }'
@@ -115,50 +115,51 @@ curl https://vault.omise.co/tokens \
   -d "card[expiration_month]=12" \
   -d "card[expiration_year]=2027"
 
-curl -X POST http://localhost:8080/api/v1/rides/accept \
--H "Content-Type: application/json" \
--H "Authorization: Bearer xxxxx" \
--d '{
-  "ride_id": "5efb81d0-bc95-4ba0-a5e3-c7cf0825cfe5"
-}'
-
-curl -X POST http://localhost:8080/api/v1/rides/arrive \
--H "Content-Type: application/json" \
--H "Authorization: Bearer xxxxx" \
--d '{
-  "ride_id": "5efb81d0-bc95-4ba0-a5e3-c7cf0825cfe5"
-}'
-
-curl -X POST http://localhost:8080/api/v1/rides/start \
--H "Content-Type: application/json" \
--H "Authorization: Bearer xxxxx" \
--d '{
-  "ride_id": "5efb81d0-bc95-4ba0-a5e3-c7cf0825cfe5"
-}'
-
-curl -X POST http://localhost:8080/api/v1/rides/complete \
--H "Content-Type: application/json" \
--H "Authorization: Bearer xxxxx" \
--d '{
-  "ride_id": "5efb81d0-bc95-4ba0-a5e3-c7cf0825cfe5"
-}'
-
-curl -X POST http://localhost:8080/api/v1/rides/cancel \
--H "Content-Type: application/json" \
--H "Authorization: Bearer xxxxx" \
--d '{
-  "ride_id": "5efb81d0-bc95-4ba0-a5e3-c7cf0825cfe5"
-}'
-
 curl -X POST http://localhost:8080/api/v1/payments/omise/webhook \
 -H "Content-Type: application/json" \
 -d '{
   "object": "event",
   "type": "charge.complete",
   "data": {
-    "id": "chrg_test_684yumv1u98vlthw5z7",
+    "id": "chrg_test_6853ltfsycj7nq3jhyl",
     "status": "successful"
   }
+}'
+
+
+curl -X POST http://localhost:8080/api/v1/rides/accept \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx" \
+-d '{
+  "ride_id": "f30b7906-28e1-4eff-8eb7-41968d39efb8"
+}'
+
+curl -X POST http://localhost:8080/api/v1/rides/arrive \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx" \
+-d '{
+  "ride_id": "f30b7906-28e1-4eff-8eb7-41968d39efb8"
+}'
+
+curl -X POST http://localhost:8080/api/v1/rides/start \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx" \
+-d '{
+  "ride_id": "f30b7906-28e1-4eff-8eb7-41968d39efb8"
+}'
+
+curl -X POST http://localhost:8080/api/v1/rides/complete \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx" \
+-d '{
+  "ride_id": "f30b7906-28e1-4eff-8eb7-41968d39efb8"
+}'
+
+curl -X POST http://localhost:8080/api/v1/rides/cancel \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer xxxxx" \
+-d '{
+  "ride_id": "f30b7906-28e1-4eff-8eb7-41968d39efb8"
 }'
 
 curl -X GET http://localhost:8080/api/v1/wallets/driver/summary \
@@ -177,7 +178,7 @@ curl -X POST http://localhost:8080/api/v1/auth/verify-otp \
 -H "Content-Type: application/json" \
 -d '{
   "phone_number": "0812345888",
-  "otp_code": "569701",
+  "otp_code": "744370",
   "role": "driver"
 }'
 
@@ -197,7 +198,7 @@ curl -X POST http://localhost:8080/api/v1/auth/register \
   "first_name": "amdriver",
   "last_name": "gogogo",
   "vehicle_type": "car",
-  "vehicle_plate": "2AB5678"
+  "vehicle_plate": "2AB4888"
 }'
 
 curl -X POST http://localhost:8080/api/v1/auth/recycle-register \
@@ -207,15 +208,15 @@ curl -X POST http://localhost:8080/api/v1/auth/recycle-register \
   "role": "driver",
   "first_name": "amdriver",
   "last_name": "gogogo",
-  "vehicle_type": "bike",
-  "vehicle_plate": "2AB5678"
+  "vehicle_type": "car",
+  "vehicle_plate": "2AB4888"
 }'
 
-curl -X POST http://localhost:8080/api/v1/auth/me \
+curl -X POST http://localhost:8080/api/v1/auth/logout \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx"
 
-curl -X POST http://localhost:8080/api/v1/auth/logout \
+curl -X POST http://localhost:8080/api/v1/auth/me \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer xxxxx"
 

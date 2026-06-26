@@ -721,19 +721,40 @@ func (h *AuthHandler) GetProfileEndpoint(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *AuthHandler) LogoutEndpoint(w http.ResponseWriter, r *http.Request) {
-  // ตรวจเช็กค่าตัวแปร nil
-  ctxUserID := r.Context().Value(UserIDKey)
+  ctx := r.Context()
+
+  // [GUARD RAIL] ตรวจเช็กค่าตัวแปร nil
+  ctxUserID := ctx.Value(UserIDKey)
   if ctxUserID == nil {
     core.WriteError(w, http.StatusUnauthorized,
       "Unauthorized access. Token context not found.", "40101")
     return
   }
 
-  // ดึงไอดีที่แกะได้มาจากด่าน Middleware
-  userID := r.Context().Value(UserIDKey).(string)
+  // ดึงไอดีจาก Middleware
+  userIDStr := ctxUserID.(string)
+
+  // ดึง Role มาเช็ก
+  ctxRole := ctx.Value(UserRoleKey)
 
   // ลบ redis login session ออก
-  _ = core.RDB.Del(r.Context(), SESSION_PREFIX + userID).Err()
+  _ = core.RDB.Del(r.Context(), SESSION_PREFIX + userIDStr).Err()
+
+  // [REALTIME CLEANUP] ถ้าคนคนนี้มีบทบาทเป็นไรเดอร์ (หรือสั่งรันเผื่อเพื่อความปลอดภัย)
+  if ctxRole == "driver" || ctxRole == nil {
+    // ลบสเตตัส "online:bike / online:car" ออกจาก Redis Hash ทันที
+    _ = core.RDB.HDel(ctx, "drivers:states", userIDStr).Err()
+
+    // ลบพิกัด GPS ออกจากกระดานสแกนงาน Redis GEO เพื่อไม่ให้เรดาร์ยิงงานมาหา
+    _ = core.RDB.ZRem(ctx, "drivers:locations", userIDStr).Err()
+
+    // [POSTGRES SYNC] ปรับสเตตัสความจริงแท้ในฐานข้อมูลหลักให้กลายเป็น offline
+    userUUID, _ := uuid.Parse(userIDStr)
+    _ = core.DB.Model(&models.Driver{}).Where("id = ?", userUUID).
+      Update("status", "offline").Error
+
+    // fmt.Printf("[Logout Sync] Cleared login session, state, and location radar for Driver ID: %s\n", userIDStr)
+  }
 
   core.WriteSuccess(w, http.StatusOK,
     "Logged out successfully", "20000", nil)
