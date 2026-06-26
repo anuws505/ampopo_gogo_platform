@@ -33,8 +33,8 @@ DB_NAME=ampopo_gogo \
 DB_PORT=5432 \
 REDIS_ADDR=localhost:6379 \
 AUTH_SECRET_KEY=a-string-secret-at-least-256-bits-long \
-OMISE_PUBLIC_KEY=pkey_test_5gyi3jzoz07f9o26x5t \
-OMISE_SECRET_KEY=skey_test_5gyi3jzp0b5dhnux2m3 \
+OMISE_PUBLIC_KEY=xxxx \
+OMISE_SECRET_KEY=yyyy \
 go run cmd/api/main.go
 
 - docker build command
@@ -53,8 +53,8 @@ docker run --network backend_default \
   -e DB_PORT=5432 \
   -e REDIS_ADDR=cache:6379 \
   -e AUTH_SECRET_KEY=a-string-secret-at-least-256-bits-long \
-  -e OMISE_PUBLIC_KEY=pkey_test_5gyi3jzoz07f9o26x5t \
-  -e OMISE_SECRET_KEY=skey_test_5gyi3jzp0b5dhnux2m3 \
+  -e OMISE_PUBLIC_KEY=xxxx \
+  -e OMISE_SECRET_KEY=yyyy \
   ampopo_gogo_platform:v1
 
 - or command with ".env" files
@@ -106,7 +106,7 @@ curl -X POST http://localhost:8080/api/v1/rides/create \
 
 curl https://vault.omise.co/tokens \
   -X POST \
-  -u "pkey_test_5gyi3jzoz07f9o26x5t" \
+  -u "xxxx" \
   -d "card[name]=Somchai Prasert" \
   -d "card[city]=Bangkok" \
   -d "card[postal_code]=10320" \
@@ -171,21 +171,21 @@ curl -X GET http://localhost:8080/api/v1/wallets/driver/summary \
 curl -X POST http://localhost:8080/api/v1/auth/request-otp \
 -H "Content-Type: application/json" \
 -d '{
-  "phone_number": "0812345888"
+  "phone_number": "0812345777"
 }'
 
 curl -X POST http://localhost:8080/api/v1/auth/verify-otp \
 -H "Content-Type: application/json" \
 -d '{
-  "phone_number": "0812345888",
-  "otp_code": "744370",
+  "phone_number": "0812345777",
+  "otp_code": "253487",
   "role": "driver"
 }'
 
 curl -X POST http://localhost:8080/api/v1/auth/confirm-owner \
 -H "Content-Type: application/json" \
 -d '{
-  "phone_number": "0812345888",
+  "phone_number": "0812345777",
   "confirmed_name": "amdriver",
   "role": "driver"
 }'
@@ -193,23 +193,23 @@ curl -X POST http://localhost:8080/api/v1/auth/confirm-owner \
 curl -X POST http://localhost:8080/api/v1/auth/register \
 -H "Content-Type: application/json" \
 -d '{
-  "phone_number": "0812345888",
+  "phone_number": "0812345777",
   "role": "driver",
   "first_name": "amdriver",
   "last_name": "gogogo",
-  "vehicle_type": "car",
-  "vehicle_plate": "2AB4888"
+  "vehicle_type": "bike",
+  "vehicle_plate": "2AB1678"
 }'
 
 curl -X POST http://localhost:8080/api/v1/auth/recycle-register \
 -H "Content-Type: application/json" \
 -d '{
-  "phone_number": "0812345888",
+  "phone_number": "0812345777",
   "role": "driver",
   "first_name": "amdriver",
   "last_name": "gogogo",
   "vehicle_type": "car",
-  "vehicle_plate": "2AB4888"
+  "vehicle_plate": "2AB1678"
 }'
 
 curl -X POST http://localhost:8080/api/v1/auth/logout \
@@ -240,29 +240,3 @@ curl -X POST http://localhost:8080/api/v1/realtime/driver/toggle-status \
 -d '{
   "is_online": false
 }'
-
-
-
-
-rides/estimate
-payments/omise/webhook
-
-auth
-- request-otp
-- verify-otp
-- confirm-owner
-- register
-- recycle-register
-- logout
-
-ride
-- create
-- accept
-- arrive
-- start
-- complete
-- cancel
-
-wallets/driver/summary
-realtime/driver
-realtime/driver/toggle-status

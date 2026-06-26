@@ -2,29 +2,59 @@ services:
   db:
     image: postgres:16-alpine
     restart: always
+    user: "70:70"
     environment:
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=ampopo_gogo
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASS}
+      - POSTGRES_DB=${DB_NAME}
+      - PGDATA=/var/lib/postgresql/data/pgdata
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./.postgres_data:/var/lib/postgresql/data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   cache:
     image: redis:7-alpine
     restart: always
+    user: "999:999"
     command: redis-server --appendonly yes
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
-      - redis_data:/data
+      - ./.redis_data:/data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   adminer:
     image: adminer:latest
     restart: unless-stopped
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis-insight:
     image: redis/redisinsight:latest
@@ -32,11 +62,15 @@ services:
     environment:
       - RI_ACCEPT_TERMS_AND_CONDITIONS=true
     ports:
-      - "5540:5540"
+      - "127.0.0.1:5540:5540"
     volumes:
-      - redisinsight_data:/db
-
-volumes:
-  postgres_data:
-  redis_data:
-  redisinsight_data:
+      - ./.redisinsight_data:/db
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5540"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
